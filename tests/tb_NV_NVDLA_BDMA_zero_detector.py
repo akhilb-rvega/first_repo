@@ -533,7 +533,7 @@ def test_tb_NV_NVDLA_BDMA_zero_detector_runner():
     proj_path = Path(__file__).resolve().parent.parent
     
     sources = [
-        proj_path / "harness/vmod/nvdla/bdma/NV_NVDLA_BDMA_zero_detector.v",
+        proj_path / "sources/vmod/nvdla/bdma/NV_NVDLA_BDMA_zero_detector.v",
     ]
     
     runner = get_runner(sim)
