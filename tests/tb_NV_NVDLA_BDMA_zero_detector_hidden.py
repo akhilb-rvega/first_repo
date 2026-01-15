@@ -13,6 +13,11 @@ from cocotb.triggers import RisingEdge, FallingEdge, Timer, ReadOnly, ReadWrite
 # BinaryValue is not used in this test file, but if needed, use: from cocotb import binary; BinaryValue = binary.BinaryValue
 import random
 import sys
+import os
+
+# Set Python encoding for Windows PowerShell compatibility
+# Equivalent to: $env:PYTHONIOENCODING="utf-8"
+os.environ['PYTHONIOENCODING'] = 'utf-8'
 
 # Block size configurations
 BLOCK_SIZE_16 = 0
@@ -599,6 +604,10 @@ def test_tb_NV_NVDLA_BDMA_zero_detector_runner():
     """Pytest wrapper for cocotb testbench"""
     import os
     from pathlib import Path
+    
+    # Ensure Python encoding is set for Windows PowerShell compatibility
+    # Equivalent to: $env:PYTHONIOENCODING="utf-8"
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
     
     # Try to import runner from cocotb_tools (Cocotb 1.8+)
     try:
