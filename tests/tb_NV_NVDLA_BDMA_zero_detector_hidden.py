@@ -32,8 +32,8 @@ class ZeroDetectorDriver:
     
     def __init__(self, dut):
         self.dut = dut
-        self.dut.inp_data_pvld.value = 0
-        self.dut.inp_data_pd.value = 0
+        self.dut.nvdla_bdma_inp_data_pvld.value = 0
+        self.dut.nvdla_bdma_inp_data_pd.value = 0
     
     async def send_data(self, data, delay=0):
         """Send a data word on the input stream (512-bit)"""
@@ -41,15 +41,15 @@ class ZeroDetectorDriver:
             await Timer(delay, units="ns")
         
         # Handle 512-bit data - cocotb can handle large integers
-        self.dut.inp_data_pd.value = data
-        self.dut.inp_data_pvld.value = 1
+        self.dut.nvdla_bdma_inp_data_pd.value = data
+        self.dut.nvdla_bdma_inp_data_pvld.value = 1
         
         await ReadWrite()
-        while self.dut.inp_data_prdy.value == 0:
+        while self.dut.nvdla_bdma_inp_data_prdy.value == 0:
             await RisingEdge(self.dut.nvdla_core_clk)
         
         await RisingEdge(self.dut.nvdla_core_clk)
-        self.dut.inp_data_pvld.value = 0
+        self.dut.nvdla_bdma_inp_data_pvld.value = 0
         await Timer(1, units="ns")
     
     async def send_block(self, data_list, delay=0):
@@ -63,8 +63,8 @@ class ZeroDetectorMonitor:
     
     def __init__(self, dut):
         self.dut = dut
-        self.dut.out_data_prdy.value = 1
-        self.dut.out_blk_is_zero_rdy.value = 1
+        self.dut.nvdla_bdma_out_data_prdy.value = 1
+        self.dut.nvdla_bdma_out_blk_is_zero_rdy.value = 1
         self.received_data = []
         self.received_block_results = []
     
@@ -72,18 +72,18 @@ class ZeroDetectorMonitor:
         """Monitor output data stream"""
         while True:
             await RisingEdge(self.dut.nvdla_core_clk)
-            if self.dut.out_data_pvld.value == 1 and self.dut.out_data_prdy.value == 1:
+            if self.dut.nvdla_bdma_out_data_pvld.value == 1 and self.dut.nvdla_bdma_out_data_prdy.value == 1:
                 # Get 512-bit value (cocotb handles large integers)
-                val = self.dut.out_data_pd.value
+                val = self.dut.nvdla_bdma_out_data_pd.value
                 self.received_data.append(int(val))
     
     async def monitor_block_results(self):
         """Monitor block-level zero detection results"""
         while True:
             await RisingEdge(self.dut.nvdla_core_clk)
-            if self.dut.out_blk_is_zero_vld.value == 1 and self.dut.out_blk_is_zero_rdy.value == 1:
+            if self.dut.nvdla_bdma_out_blk_is_zero_vld.value == 1 and self.dut.nvdla_bdma_out_blk_is_zero_rdy.value == 1:
                 result = {
-                    'is_zero': bool(self.dut.out_blk_is_zero.value),
+                    'is_zero': bool(self.dut.nvdla_bdma_out_blk_is_zero.value),
                     'cycle': cocotb.utils.get_sim_time('ns')
                 }
                 self.received_block_results.append(result)
@@ -96,8 +96,8 @@ async def test_reset(dut):
     
     # Reset
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 0
-    dut.reg2zd_cfg_block_size.value = 0
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0
     await Timer(20, units="ns")
     
     dut.nvdla_core_rstn.value = 1
@@ -105,9 +105,9 @@ async def test_reset(dut):
     await Timer(5, units="ns")
     
     # Check reset values
-    assert dut.out_data_pvld.value == 0, "Output valid should be 0 after reset"
-    assert dut.out_blk_is_zero_vld.value == 0, "Block result valid should be 0 after reset"
-    assert dut.zd2reg_error_overflow.value == 0, "Error should be 0 after reset"
+    assert dut.nvdla_bdma_out_data_pvld.value == 0, "Output valid should be 0 after reset"
+    assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0, "Block result valid should be 0 after reset"
+    assert dut.nvdla_bdma_zd2reg_error_overflow.value == 0, "Error should be 0 after reset"
 
 
 @cocotb.test()
@@ -116,8 +116,8 @@ async def test_bypass_mode(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
     
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 0  # Bypass mode
-    dut.reg2zd_cfg_block_size.value = BLOCK_SIZE_16
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0  # Bypass mode
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = BLOCK_SIZE_16
     await Timer(20, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
@@ -138,9 +138,9 @@ async def test_bypass_mode(dut):
         await RisingEdge(dut.nvdla_core_clk)
         await Timer(1, units="ns")
         # In bypass mode, output should match input immediately
-        out_val = int(dut.out_data_pd.value)
+        out_val = int(dut.nvdla_bdma_out_data_pd.value)
         assert out_val == data, f"Bypass mode: output should match input {hex(data)}, got {hex(out_val)}"
-        assert dut.out_data_pvld.value == 1, "Bypass mode: output should be valid"
+        assert dut.nvdla_bdma_out_data_pvld.value == 1, "Bypass mode: output should be valid"
     
     # Block results should not be generated in bypass mode
     await Timer(100, units="ns")
@@ -153,8 +153,8 @@ async def test_all_zero_block_16(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
     
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 1
-    dut.reg2zd_cfg_block_size.value = BLOCK_SIZE_16
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = BLOCK_SIZE_16
     await Timer(20, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
@@ -181,8 +181,8 @@ async def test_non_zero_block_16(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
     
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 1
-    dut.reg2zd_cfg_block_size.value = BLOCK_SIZE_16
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = BLOCK_SIZE_16
     await Timer(20, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
@@ -209,8 +209,8 @@ async def test_block_size_32(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
     
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 1
-    dut.reg2zd_cfg_block_size.value = BLOCK_SIZE_32
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = BLOCK_SIZE_32
     await Timer(20, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
@@ -236,8 +236,8 @@ async def test_block_size_64(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
     
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 1
-    dut.reg2zd_cfg_block_size.value = BLOCK_SIZE_64
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = BLOCK_SIZE_64
     await Timer(20, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
@@ -263,8 +263,8 @@ async def test_multiple_blocks(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
     
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 1
-    dut.reg2zd_cfg_block_size.value = BLOCK_SIZE_16
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = BLOCK_SIZE_16
     await Timer(20, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
@@ -300,8 +300,8 @@ async def test_early_nonzero_detection(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
     
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 1
-    dut.reg2zd_cfg_block_size.value = BLOCK_SIZE_16
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = BLOCK_SIZE_16
     await Timer(20, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
@@ -327,8 +327,8 @@ async def test_data_pass_through(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
     
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 1
-    dut.reg2zd_cfg_block_size.value = BLOCK_SIZE_16
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = BLOCK_SIZE_16
     await Timer(20, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
@@ -360,8 +360,8 @@ async def test_backpressure(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
     
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 1
-    dut.reg2zd_cfg_block_size.value = BLOCK_SIZE_16
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = BLOCK_SIZE_16
     await Timer(20, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
@@ -372,22 +372,22 @@ async def test_backpressure(dut):
     cocotb.start_soon(monitor.monitor_block_results())
     
     # Apply backpressure
-    dut.out_data_prdy.value = 0
+    dut.nvdla_bdma_out_data_prdy.value = 0
     
     # Try to send data
     block_data = [0] * 16
     for i, data in enumerate(block_data):
-        dut.inp_data_pd.value = data
-        dut.inp_data_pd.value = data
-        dut.inp_data_pvld.value = 1
+        dut.nvdla_bdma_inp_data_pd.value = data
+        dut.nvdla_bdma_inp_data_pd.value = data
+        dut.nvdla_bdma_inp_data_pvld.value = 1
         await RisingEdge(dut.nvdla_core_clk)
         # Input should not be ready when output is not ready
         if i < 15:  # Don't check on last beat as state may change
-            assert dut.inp_data_prdy.value == 0, f"Input should not be ready when output not ready (beat {i})"
+            assert dut.nvdla_bdma_inp_data_prdy.value == 0, f"Input should not be ready when output not ready (beat {i})"
     
     # Release backpressure
-    dut.out_data_prdy.value = 1
-    dut.inp_data_pvld.value = 0
+    dut.nvdla_bdma_out_data_prdy.value = 1
+    dut.nvdla_bdma_inp_data_pvld.value = 0
     await Timer(200, units="ns")
     
     # Should eventually get results
@@ -400,8 +400,8 @@ async def test_block_result_backpressure(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
     
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 1
-    dut.reg2zd_cfg_block_size.value = BLOCK_SIZE_16
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = BLOCK_SIZE_16
     await Timer(20, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
@@ -412,7 +412,7 @@ async def test_block_result_backpressure(dut):
     cocotb.start_soon(monitor.monitor_block_results())
     
     # Apply backpressure on block result
-    dut.out_blk_is_zero_rdy.value = 0
+    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 0
     
     # Send a block
     block_data = [0] * 16
@@ -421,11 +421,11 @@ async def test_block_result_backpressure(dut):
     await Timer(100, units="ns")
     
     # Block result should be valid but not accepted
-    assert dut.out_blk_is_zero_vld.value == 1, "Block result should be valid"
+    assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 1, "Block result should be valid"
     assert len(monitor.received_block_results) == 0, "Block result should not be accepted yet"
     
     # Release backpressure
-    dut.out_blk_is_zero_rdy.value = 1
+    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 1
     await Timer(50, units="ns")
     
     assert len(monitor.received_block_results) == 1, "Block result should be accepted after backpressure release"
@@ -437,8 +437,8 @@ async def test_disable_clears_state(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
     
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 1
-    dut.reg2zd_cfg_block_size.value = BLOCK_SIZE_16
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = BLOCK_SIZE_16
     await Timer(20, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
@@ -454,7 +454,7 @@ async def test_disable_clears_state(dut):
     await Timer(50, units="ns")
     
     # Disable zero detection
-    dut.reg2zd_cfg_enable.value = 0
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
     await RisingEdge(dut.nvdla_core_clk)
     await Timer(20, units="ns")
     
@@ -465,7 +465,7 @@ async def test_disable_clears_state(dut):
     test_data = 0x1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF
     await driver.send_data(test_data)
     await RisingEdge(dut.nvdla_core_clk)
-    out_val = int(dut.out_data_pd.value)
+    out_val = int(dut.nvdla_bdma_out_data_pd.value)
     assert out_val == test_data, f"Should pass through in bypass mode: expected {hex(test_data)}, got {hex(out_val)}"
 
 
@@ -475,8 +475,8 @@ async def test_random_data(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
     
     dut.nvdla_core_rstn.value = 0
-    dut.reg2zd_cfg_enable.value = 1
-    dut.reg2zd_cfg_block_size.value = BLOCK_SIZE_16
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = BLOCK_SIZE_16
     await Timer(20, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
