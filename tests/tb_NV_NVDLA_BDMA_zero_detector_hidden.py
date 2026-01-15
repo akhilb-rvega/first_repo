@@ -626,6 +626,7 @@ def test_tb_NV_NVDLA_BDMA_zero_detector_runner():
         sources=sources,
         hdl_toplevel="NV_NVDLA_BDMA_zero_detector",
         always=True,
+        timescale=("1ns", "1ns"),  # Set timescale to 1ns/1ns for proper clock precision
     )
     
     runner.test(
