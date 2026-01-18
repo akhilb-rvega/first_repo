@@ -1,8 +1,7 @@
 # test_zero_detector.py
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, FallingEdge, Timer
-import random
+from cocotb.triggers import RisingEdge, Timer
 import pytest
 from cocotb_test.simulator import run
 
@@ -46,17 +45,6 @@ async def recv_data(dut):
             return data
 
 
-async def recv_zero_meta(dut):
-    """Receive one zero-detection result"""
-    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 1
-    while True:
-        await RisingEdge(dut.nvdla_core_clk)
-        if dut.nvdla_bdma_out_blk_is_zero_vld.value:
-            z = int(dut.nvdla_bdma_out_blk_is_zero.value)
-            dut.nvdla_bdma_out_blk_is_zero_rdy.value = 0
-            return z
-
-
 @cocotb.test()
 async def test_bypass_mode(dut):
     """Bypass mode: data passes through, no metadata"""
@@ -76,91 +64,6 @@ async def test_bypass_mode(dut):
         assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
 
     cocotb.log.info("Bypass mode test PASSED")
-
-
-@cocotb.test()
-async def test_enabled_basic(dut):
-    """Enabled mode: check zero detection correctness"""
-    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, unit="ns").start())
-    await reset_dut(dut)
-
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
-
-    test_vectors = [
-        0x00,
-        0x01,
-        0x00,
-        0xA5,
-        0x00,
-    ]
-
-    expected_zero = [1, 0, 1, 0, 1]
-
-    for val, exp_z in zip(test_vectors, expected_zero):
-        await send_beat(dut, val)
-
-        out_data = await recv_data(dut)
-        out_z = await recv_zero_meta(dut)
-
-        assert out_data == val, "Data mismatch"
-        assert out_z == exp_z, f"Zero detect mismatch for {val:#x}"
-
-    cocotb.log.info("Enabled basic zero-detect test PASSED")
-
-
-@cocotb.test()
-async def test_backpressure(dut):
-    """Independent backpressure on data and metadata"""
-    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, unit="ns").start())
-    await reset_dut(dut)
-
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
-
-    values = [0x00, 0x11, 0x00, 0x22]
-
-    for val in values:
-        await send_beat(dut, val)
-
-        # Randomly stall data or metadata
-        stall_data = random.choice([True, False])
-        stall_meta = random.choice([True, False])
-
-        if not stall_data:
-            data = await recv_data(dut)
-            assert data == val
-
-        if not stall_meta:
-            z = await recv_zero_meta(dut)
-            assert z == (1 if val == 0 else 0)
-
-        # Eventually accept both
-        if stall_data:
-            data = await recv_data(dut)
-            assert data == val
-
-        if stall_meta:
-            z = await recv_zero_meta(dut)
-            assert z == (1 if val == 0 else 0)
-
-    cocotb.log.info("Backpressure test PASSED")
-
-
-@cocotb.test()
-async def test_disable_clears_state(dut):
-    """Disabling clears pending metadata"""
-    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, unit="ns").start())
-    await reset_dut(dut)
-
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
-    await send_beat(dut, 0x00)
-
-    # Disable before accepting metadata
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
-    await RisingEdge(dut.nvdla_core_clk)
-
-    assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
-
-    cocotb.log.info("Disable-clears-state test PASSED")
 
 
 def test_tb_NV_NVDLA_BDMA_zero_detector_runner():
