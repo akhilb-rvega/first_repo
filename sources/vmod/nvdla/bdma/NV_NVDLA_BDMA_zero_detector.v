@@ -56,25 +56,15 @@ module NV_NVDLA_BDMA_zero_detector (
                         nvdla_bdma_out_data_prdy;
 
     // ------------------------------------------------------------
-    // Ready logic
+    // Ready logic - with buffering in both modes
     // ------------------------------------------------------------
-    assign nvdla_bdma_inp_data_prdy =
-        (!nvdla_bdma_reg2zd_cfg_enable) ?
-            nvdla_bdma_out_data_prdy :
-            (!data_pvld_r || nvdla_bdma_out_data_prdy);
+    assign nvdla_bdma_inp_data_prdy = (!data_pvld_r || nvdla_bdma_out_data_prdy);
 
     // ------------------------------------------------------------
-    // Output datapath
+    // Output datapath - always use buffered path
     // ------------------------------------------------------------
-    assign nvdla_bdma_out_data_pd =
-        nvdla_bdma_reg2zd_cfg_enable ?
-            data_pd_r :
-            nvdla_bdma_inp_data_pd;
-
-    assign nvdla_bdma_out_data_pvld =
-        nvdla_bdma_reg2zd_cfg_enable ?
-            data_pvld_r :
-            nvdla_bdma_inp_data_pvld;
+    assign nvdla_bdma_out_data_pd = data_pd_r;
+    assign nvdla_bdma_out_data_pvld = data_pvld_r;
 
     // ------------------------------------------------------------
     // FSM next-state
@@ -114,19 +104,18 @@ module NV_NVDLA_BDMA_zero_detector (
             // Error permanently disabled
             nvdla_bdma_zd2reg_error_overflow <= 1'b0;
 
+            // Data register - always buffer data for both bypass and enabled modes
+            if (in_accept) begin
+                data_pd_r   <= nvdla_bdma_inp_data_pd;
+                data_pvld_r <= 1'b1;
+            end else if (out_accept) begin
+                data_pvld_r <= 1'b0;
+            end
+
+            // Zero detection and metadata - only when enabled
             if (!nvdla_bdma_reg2zd_cfg_enable) begin
-                data_pvld_r                   <= 1'b0;
                 nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
             end else begin
-                // Data register
-                if (in_accept) begin
-                    data_pd_r   <= nvdla_bdma_inp_data_pd;
-                    data_pvld_r <= 1'b1;
-                end else if (out_accept) begin
-                    data_pvld_r <= 1'b0;
-                end
-
-                // Zero detection (per beat)
                 if (in_accept) begin
                     nvdla_bdma_out_blk_is_zero     <= (nvdla_bdma_inp_data_pd == 8'd0);
                     nvdla_bdma_out_blk_is_zero_vld <= 1'b1;
