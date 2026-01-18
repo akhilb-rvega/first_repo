@@ -60,6 +60,30 @@ async def recv_data(dut):
             return data
 
 
+async def send_recv_concurrent(dut, value):
+    """Send and receive concurrently for direct passthrough scenarios"""
+    # Set ready before sending to avoid deadlock in bypass mode
+    dut.nvdla_bdma_out_data_prdy.value = 1
+    await RisingEdge(dut.nvdla_core_clk)
+    
+    # Now send data
+    dut.nvdla_bdma_inp_data_pd.value = value
+    dut.nvdla_bdma_inp_data_pvld.value = 1
+    
+    # Wait for handshake
+    while True:
+        await RisingEdge(dut.nvdla_core_clk)
+        if dut.nvdla_bdma_inp_data_prdy.value and dut.nvdla_bdma_out_data_pvld.value:
+            data = int(dut.nvdla_bdma_out_data_pd.value)
+            break
+    
+    # Clear signals
+    dut.nvdla_bdma_inp_data_pvld.value = 0
+    dut.nvdla_bdma_out_data_prdy.value = 0
+    
+    return data
+
+
 @cocotb.test()
 async def test_bypass_mode(dut):
     """Bypass mode: data passes through, no metadata"""
@@ -71,8 +95,8 @@ async def test_bypass_mode(dut):
     test_vectors = [0x00, 0x12, 0xFF, 0x01]
 
     for val in test_vectors:
-        await send_beat(dut, val)
-        out = await recv_data(dut)
+        # Use concurrent send/recv for bypass mode to avoid deadlock
+        out = await send_recv_concurrent(dut, val)
         assert out == val, f"Bypass data mismatch: {out} != {val}"
 
         # Metadata must never assert in bypass
