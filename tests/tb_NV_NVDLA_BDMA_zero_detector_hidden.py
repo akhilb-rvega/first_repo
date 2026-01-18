@@ -16,9 +16,10 @@ if sys.platform == 'win32':
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, Timer
+from cocotb.triggers import RisingEdge, FallingEdge, Timer
 import pytest
 from cocotb_test.simulator import run
+import random
 
 CLK_PERIOD_NS = 10
 
@@ -58,6 +59,17 @@ async def recv_data(dut):
             data = int(dut.nvdla_bdma_out_data_pd.value)
             dut.nvdla_bdma_out_data_prdy.value = 0
             return data
+
+
+async def recv_zero_meta(dut):
+    """Receive one zero-detection metadata beat"""
+    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 1
+    while True:
+        await RisingEdge(dut.nvdla_core_clk)
+        if dut.nvdla_bdma_out_blk_is_zero_vld.value:
+            is_zero = int(dut.nvdla_bdma_out_blk_is_zero.value)
+            dut.nvdla_bdma_out_blk_is_zero_rdy.value = 0
+            return is_zero
 
 
 async def send_recv_concurrent(dut, value):
@@ -103,6 +115,90 @@ async def test_bypass_mode(dut):
         assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
 
     cocotb.log.info("Bypass mode test PASSED")
+
+
+@cocotb.test()
+async def test_enabled_basic(dut):
+    """Enabled mode: check zero detection on each beat"""
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+
+    test_vectors = [
+        (0x00, 1),  # zero -> expect is_zero=1
+        (0x12, 0),  # non-zero -> expect is_zero=0
+        (0x00, 1),  # zero again
+        (0xFF, 0),  # non-zero
+    ]
+
+    for val, expected_zero in test_vectors:
+        await send_beat(dut, val)
+        out = await recv_data(dut)
+        assert out == val, f"Data mismatch: {out} != {val}"
+
+        meta = await recv_zero_meta(dut)
+        assert meta == expected_zero, f"Zero metadata mismatch: {meta} != {expected_zero}"
+
+    cocotb.log.info("Enabled basic test PASSED")
+
+
+@cocotb.test()
+async def test_backpressure(dut):
+    """Test backpressure handling on output"""
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+
+    # Send a beat
+    await send_beat(dut, 0xAB)
+
+    # Wait a few cycles before accepting output (backpressure)
+    for _ in range(5):
+        await RisingEdge(dut.nvdla_core_clk)
+        assert dut.nvdla_bdma_out_data_pvld.value == 1, "Output should remain valid"
+        assert dut.nvdla_bdma_out_data_pd.value == 0xAB, "Output data should remain stable"
+
+    # Now accept output
+    out = await recv_data(dut)
+    assert out == 0xAB, f"Data mismatch after backpressure: {out} != 0xAB"
+
+    # Metadata should be available
+    meta = await recv_zero_meta(dut)
+    assert meta == 0, "Should detect non-zero"
+
+    cocotb.log.info("Backpressure test PASSED")
+
+
+@cocotb.test()
+async def test_disable_clears_state(dut):
+    """Test that disabling clears state"""
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, unit="ns").start())
+    await reset_dut(dut)
+
+    # Start enabled
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+
+    # Send a beat
+    await send_beat(dut, 0x55)
+    out = await recv_data(dut)
+    assert out == 0x55
+
+    # Disable mid-operation
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
+    await RisingEdge(dut.nvdla_core_clk)
+
+    # Metadata should clear
+    assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0, "Metadata should clear when disabled"
+
+    # Switch to bypass mode and verify
+    test_val = 0xCC
+    out = await send_recv_concurrent(dut, test_val)
+    assert out == test_val, f"Bypass after disable failed: {out} != {test_val}"
+    assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0, "Metadata should stay clear in bypass"
+
+    cocotb.log.info("Disable clears state test PASSED")
 
 
 def test_tb_NV_NVDLA_BDMA_zero_detector_runner():
