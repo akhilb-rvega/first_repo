@@ -180,16 +180,21 @@ async def test_disable_clears_state(dut):
     # Start enabled
     dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
 
-    # Send a beat
+    # Send a beat and consume both data and metadata
     await send_beat(dut, 0x55)
     out = await recv_data(dut)
     assert out == 0x55
+    meta = await recv_zero_meta(dut)
+    assert meta == 0, "0x55 should be detected as non-zero"
 
+    # Wait a cycle to ensure metadata handshake completes
+    await RisingEdge(dut.nvdla_core_clk)
+    
     # Disable mid-operation
     dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
     await RisingEdge(dut.nvdla_core_clk)
 
-    # Metadata should clear
+    # Metadata should remain clear when disabled
     assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0, "Metadata should clear when disabled"
 
     # Switch to bypass mode and verify
