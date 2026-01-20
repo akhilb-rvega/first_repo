@@ -554,7 +554,7 @@ def test_tb_NV_NVDLA_BDMA_zero_detector_runner():
     
     runner.test(
         hdl_toplevel="NV_NVDLA_BDMA_zero_detector",
-        test_module="tb_NV_NVDLA_BDMA_zero_detector"
+        test_module="tb_NV_NVDLA_BDMA_zero_detector_hidden"
     )
 
 
