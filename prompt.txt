@@ -1,214 +1,211 @@
-NV_NVDLA_BDMA_zero_detector (8-bit, per-beat version)
-
-Objective
-
+## Objective
 Implement a synthesizable SystemVerilog module named:
-
 NV_NVDLA_BDMA_zero_detector
 
-This module implements a per-beat zero-detection engine that operates as a lightweight pre-processing stage in the NVDLA BDMA data path for sparse compression and metadata generation. The design is fully synchronous, deterministic, and synthesizable.
+This module implements a zero-detection engine that operates as a pre-processing stage in the NVDLA BDMA data path for sparse compression and metadata generation. The design must be fully synchronous, deterministic, and synthesizable in standard ASIC flows (e.g., TSMC)
+
+## 1. High-Level Functional Description
+
+### 1.1 Proposal Overview
+I propose adding a Zero Detector Engine in the NVDLA BDMA data path as a pre-processing stage for sparse compression and metadata generation. While sparse compression reduces memory traffic by encoding zero-valued data efficiently, applying compression uniformly to all blocks is inefficient because many blocks are either entirely zero or entirely dense. Attempting to encode every block introduces unnecessary metadata, control overhead, and potential throughput loss. A hardware zero-detection stage identifies all-zero blocks early in the data path, allowing them to be skipped, represented compactly, or routed through optimized fast paths.
+
+### 1.2 Purpose
+The purpose is to provide block-level sparsity awareness in the data-movement path—enabling the memory subsystem to avoid unnecessary compression work on dense or irrelevant data regions, preserve DRAM bandwidth savings, reduce memory power, and improve effective throughput. This is a data-movement optimization that enhances efficiency without modifying the compute pipeline, arithmetic units, or scheduling logic.
+
+### 1.3 Solution Architecture
+The solution is based on a synthesizable, Moore-FSM–driven, streaming zero-detection engine that inspects each word in a fixed-size block and maintains a running "any-nonzero" condition. For each block, the detector counts beats, tracks whether any non-zero value has been observed, and emits a single block-level result (blk_is_zero) once the block boundary is reached. The design integrates cleanly into the BDMA streaming interface, supports dynamic bypass, and is fully simulatable and synthesizable in standard ASIC flows.
+
+### 1.4 Implementation Scope
+While the core zero-detection logic itself is only a few hundred lines of RTL, a production-ready implementation includes hardened boundary handling, early-termination detection, block-overflow protection, deterministic recovery behavior, CSB configurability, and full verification. When combined with the sparse compressor, decompressor, metadata support, and BDMA controller extensions, the complete sparse data-movement capability realistically amounts to approximately 5–7K lines of RTL and testbench code.
+
+This makes the proposal technically feasible, low risk to the existing architecture, and capable of delivering sustained system-level gains in bandwidth efficiency, memory power reduction, and scalability for sparse workloads.
+
+---
+
+## 2. Module Interface
+
+### 2.1 Clock and Reset
+| Port Name         | Direction | Width | Description                                   |
+| ----------------- | --------- | ----- | --------------------------------------------- |
+| `nvdla_core_clk`  | Input     | 1     | Core clock (all logic on rising edge)         |
+| `nvdla_core_rstn` | Input     | 1     | Asynchronous active-LOW reset                 |
+
+### 2.2 Configuration Registers (Inputs)
+| Port Name                | Width | Description                                    |
+| ------------------------ | ----- | ---------------------------------------------- |
+| `nvdla_bdma_reg2zd_cfg_block_size` | 2     | Block size in beats (0=16, 1=32, 2=64, 3=128) |
+| `nvdla_bdma_reg2zd_cfg_enable`      | 1     | Enable zero detection (1) or bypass (0)        |
+
+### 2.3 Error Reporting (Outputs)
+| Port Name                | Width | Description                                    |
+| ------------------------ | ----- | ---------------------------------------------- |
+| `nvdla_bdma_zd2reg_error_overflow` | 1     | Error: beat count overflow detected            |
+
+### 2.4 Input Data Stream
+| Port Name     | Width | Description                    |
+| ------------- | ----- | ------------------------------ |
+| `nvdla_bdma_inp_data_pd` | 512   | Input data packet [511:0]      |
+| `nvdla_bdma_inp_data_pvld`| 1     | Input data valid               |
+| `nvdla_bdma_inp_data_prdy`| 1     | Input data ready (output)       |
+
+### 2.5 Output Data Stream (Pass-through)
+| Port Name      | Width | Description                    |
+| -------------- | ----- | ------------------------------ |
+| `nvdla_bdma_out_data_pd`  | 512   | Output data packet [511:0]     |
+| `nvdla_bdma_out_data_pvld`| 1     | Output data valid              |
+| `nvdla_bdma_out_data_prdy`| 1     | Output data ready (input)      |
+
+### 2.6 Block-Level Zero Detection Result
+| Port Name           | Width | Description                                    |
+| ------------------- | ----- | ---------------------------------------------- |
+| `nvdla_bdma_out_blk_is_zero`   | 1     | Block-level zero detection result (1=all zeros, 0=has non-zero) |
+| `nvdla_bdma_out_blk_is_zero_vld`| 1   | Block result valid (asserted at block boundary) |
+| `nvdla_bdma_out_blk_is_zero_rdy`| 1   | Block result ready (input)                     |
+
+---
+
+## 3. Functional Requirements
+
+### 3.1 Zero Detection Logic
+- **Word-Level Detection**: For each 512-bit input word, determine if the word is all zeros
+- **Block-Level Accumulation**: Maintain a running "any-nonzero" condition across all words in a block
+- **Block Result**: Emit `nvdla_bdma_out_blk_is_zero = 1` if all words in the block are zero, `nvdla_bdma_out_blk_is_zero = 0` if any word is non-zero
+- **Block Boundary**: Emit the block result when the block boundary is reached (after processing the configured number of beats)
+
+### 3.2 Block Size Configuration
+- **Configurable Block Sizes**: Support 16, 32, 64, or 128 beats per block
+- **Configuration Register**: `nvdla_bdma_reg2zd_cfg_block_size` encodes block size (0=16, 1=32, 2=64, 3=128)
+- **Beat Counter**: Count beats within the current block, reset at block boundary
+
+### 3.3 State Machine (FSM)
+- **States**: IDLE, DETECTING, BLOCK_DONE, ERROR
+- **IDLE**: Waiting for data to start block detection
+- **DETECTING**: Actively processing beats within a block, accumulating zero detection
+- **BLOCK_DONE**: Block boundary reached, waiting for block result to be accepted
+- **ERROR**: Beat count overflow or other error condition detected
+
+### 3.4 Data Path (Pass-through)
+- **Transparent Pass-through**: Input data passes through to output with flow control
+- **Bypass Mode**: When `nvdla_bdma_reg2zd_cfg_enable = 0`, data passes through transparently without zero detection
+- **Flow Control**: Proper valid/ready handshaking on both input and output interfaces
+- **Data Registration**: When enabled, data is registered with proper flow control
+
+### 3.5 Block Result Output
+- **Result Generation**: Block result (`nvdla_bdma_out_blk_is_zero`) computed from accumulated non-zero detection
+- **Valid Signal**: `nvdla_bdma_out_blk_is_zero_vld` asserted when block boundary is reached
+- **Handshaking**: Block result uses separate valid/ready handshake from data path
+- **Timing**: Result valid asserted at block boundary, cleared when ready is asserted
+
+### 3.6 Error Detection
+- **Overflow Protection**: Detect if beat count exceeds configured block size
+- **Error Reporting**: Assert `nvdla_bdma_zd2reg_error_overflow` when overflow detected
+- **Error Recovery**: Enter ERROR state, recover when zero detection is disabled
+
+---
+
+## 4. Timing and Latency
 
-1. High-Level Functional Description
-1.1 Proposal Overview
+### 4.1 Data Path Latency
+- **Bypass Mode**: Combinational pass-through (0 cycles latency)
+- **Enabled Mode**: 1 cycle latency (data registered with flow control)
 
-The Zero Detector Engine provides beat-level sparsity awareness in the NVDLA BDMA data path. Each incoming 8-bit data beat is inspected independently to determine whether it is zero. The result is emitted as metadata alongside the data stream and may be consumed by downstream sparse compression, skipping, or routing logic.
+### 4.2 Block Result Timing
+- **Result Generation**: Combinational from accumulated state
+- **Valid Assertion**: Asserted when entering BLOCK_DONE state
+- **Result Clearing**: Cleared when ready is asserted or leaving BLOCK_DONE state
 
-This implementation intentionally avoids internal beat counting and block accumulation. Each beat is treated as an independent detection unit, simplifying control logic and eliminating block-level state.
+### 4.3 State Machine Timing
+- **State Transitions**: Synchronous on clock rising edge
+- **Beat Counting**: Updates on data acceptance (when valid and ready both asserted)
 
-1.2 Purpose
+---
 
-The purpose of this module is to:
+## 5. Design Constraints
 
-Identify zero-valued data beats early in the data-movement pipeline
+### 5.1 Synthesis Requirements
+- **Fully Synthesizable**: Must synthesize in standard ASIC flows (Synopsys Design Compiler, Cadence Genus, etc.)
+- **No Latches**: All sequential logic must be clocked registers
+- **Reset Behavior**: All registers must have explicit reset values
+- **Combinational Logic**: No combinational feedback loops
 
-Generate per-beat zero metadata with minimal latency
+### 5.2 Interface Requirements
+- **Valid/Ready Handshaking**: Proper AXI-style valid/ready protocol on all streaming interfaces
+- **Backpressure Support**: Must handle backpressure on both input and output data paths
+- **Block Result Handshaking**: Separate valid/ready handshake for block result output
 
-Preserve full throughput under backpressure
+### 5.3 Configuration Requirements
+- **Dynamic Configuration**: Block size and enable can change during operation
+- **Bypass Mode**: Must support dynamic bypass without data loss
+- **State Clearing**: Disabling zero detection must clear state machine to IDLE
 
-Enable downstream logic to aggregate beats into blocks if required
+---
 
-This approach improves flexibility and reduces hardware complexity while remaining compatible with sparse compression pipelines.
+## 6. Coding Requirements
 
-1.3 Solution Architecture
+### 6.1 Language and Standards
+- **Language**: SystemVerilog or Verilog-2001 compliant
+- **Synthesizable Constructs Only**: No simulation-only constructs
+- **NVDLA Coding Style**: Follow NVDLA naming conventions and coding patterns
 
-The solution is a Moore-FSM–driven, streaming zero-detection engine that:
+### 6.2 Signal Naming
+- **Configuration**: `nvdla_bdma_reg2zd_*` = Register to zero detector configuration
+- **Zero Detector to Register**: `nvdla_bdma_zd2reg_*` = Zero detector to register status/error
+- **Input/Output**: `nvdla_bdma_inp_*` = Input data path, `nvdla_bdma_out_*` = Output data path
+- **Packet Data**: `*_pd` = Packet data, `*_pvld` = Packet valid, `*_prdy` = Packet ready
 
-Inspects each 8-bit input beat
+### 6.3 Design Rules
+- **No Latches**: All always blocks must be clocked
+- **Explicit Resets**: All registers must have reset values
+- **Complete Case Statements**: All case statements must have default cases
+- **Deterministic Behavior**: No X-propagation issues
 
-Determines whether the beat is zero
+---
 
-Emits a 1-bit zero indicator per accepted beat
+## 7. Expected Implementation Size
 
-Passes data through transparently with valid/ready flow control
+- **Module Name**: `NV_NVDLA_BDMA_zero_detector`
+- **Location**: `sources/vmod/nvdla/bdma/`
+- **Expected Lines**: ~300 lines of RTL
+  - FSM state machine (~80 lines)
+  - Beat counter and block size decoding (~30 lines)
+  - Zero detection logic (~20 lines)
+  - Block result generation (~30 lines)
+  - Boundary handling (~40 lines)
+  - Error protection (~30 lines)
+  - Bypass and control logic (~40 lines)
+  - Port declarations and wiring (~30 lines)
 
-Supports dynamic bypass
+---
 
-No internal beat counter, block boundary tracking, or overflow detection is implemented in this version.
+## 8. Impact Description
 
-1.4 Implementation Scope
+While sparse_compressor reduces DRAM traffic by encoding zero-valued data efficiently, zero_detector adds block-level intelligence that prevents unnecessary compression and metadata generation for all-zero or trivially dense regions. For Transformer workloads with pruned weights, sparse activations, or structured block sparsity, the detector enables early identification of zero blocks so they can be skipped, represented compactly, or routed through optimized paths without touching the compute pipeline. The module preserves correctness across burst boundaries, reduces control and storage overhead, and amplifies the bandwidth, power, and buffer-capacity gains of sparse data movement. Together with the compressor and decompressor, zero_detector forms a low-risk, fully synthesizable architectural enhancement that makes large, pruned, and block-sparse Transformer models more efficient on NVDLA-based systems, particularly for edge and embedded inference scenarios.
 
-The RTL implementation is intentionally minimal and robust:
+---
 
-No counters
-
-No multi-beat accumulation
-
-No overflow conditions
-
-Deterministic recovery on disable
-
-Block-level semantics, if required, are expected to be implemented downstream.
-
-2. Module Interface
-2.1 Clock and Reset
-Port Name	Direction	Width	Description
-nvdla_core_clk	Input	1	Core clock (posedge)
-nvdla_core_rstn	Input	1	Asynchronous active-LOW reset
-2.2 Configuration Registers (Inputs)
-Port Name	Width	Description
-nvdla_bdma_reg2zd_cfg_block_size	2	Reserved (not used in current implementation)
-nvdla_bdma_reg2zd_cfg_enable	1	Enable zero detection (1) or bypass (0)
-
-Note: cfg_block_size is retained for forward compatibility only.
-
-2.3 Error Reporting (Outputs)
-Port Name	Width	Description
-nvdla_bdma_zd2reg_error_overflow	1	Tied LOW (no overflow detection in this version)
-2.4 Input Data Stream
-Port Name	Width	Description
-nvdla_bdma_inp_data_pd	8	Input data packet
-nvdla_bdma_inp_data_pvld	1	Input data valid
-nvdla_bdma_inp_data_prdy	1	Input data ready
-2.5 Output Data Stream (Pass-through)
-Port Name	Width	Description
-nvdla_bdma_out_data_pd	8	Output data packet
-nvdla_bdma_out_data_pvld	1	Output data valid
-nvdla_bdma_out_data_prdy	1	Output data ready
-2.6 Zero Detection Result (Per Beat)
-Port Name	Width	Description
-nvdla_bdma_out_blk_is_zero	1	Beat-level zero result (1 = data beat is zero)
-nvdla_bdma_out_blk_is_zero_vld	1	Result valid
-nvdla_bdma_out_blk_is_zero_rdy	1	Result ready
-3. Functional Requirements
-3.1 Zero Detection Logic
-
-Beat-Level Detection: For each 8-bit input word, determine if the value is zero
-
-Independent Beats: No accumulation across beats
-
-Result Generation: One zero-detection result per accepted beat
-
-3.2 Block Size Configuration
-
-cfg_block_size is not used
-
-No beat counting
-
-No block boundary detection
-
-3.3 State Machine (FSM)
-
-States: IDLE, DONE
-
-IDLE: Wait for an input beat
-
-DONE: Hold zero-detection result until accepted
-
-FSM behavior is fully synchronous and deterministic.
-
-3.4 Data Path
-
-Bypass Mode (cfg_enable = 0)
-
-Data passes through combinationally
-
-No zero-detection metadata generated
-
-Enabled Mode
-
-1-cycle registered data path
-
-Full valid/ready backpressure support
-
-3.5 Zero Result Handshake
-
-Zero-detection result uses an independent valid/ready channel
-
-Exactly one metadata result per accepted data beat
-
-Result is cleared once accepted
-
-3.6 Error Handling
-
-No overflow or error conditions
-
-Error output permanently deasserted
-
-Disabling zero detection clears all internal state
-
-4. Timing and Latency
-4.1 Data Path Latency
-Mode	Latency
-Bypass	0 cycles
-Enabled	1 cycle
-4.2 Zero Result Timing
-
-Result valid asserted immediately following beat acceptance
-
-Result persists until handshake completes
-
-5. Design Constraints
-
-Fully synthesizable
-No latches
-Explicit reset values
-No combinational feedback
-Valid/ready compliant
-Backpressure safe
-
-6. Coding Requirements
-
-SystemVerilog / Verilog-2001
-
-Synthesizable constructs only
-
-NVDLA naming conventions preserved
-
-Reserved signals retained for forward compatibility
-
-7. Expected Implementation Size
-
-~150–200 lines RTL
-
-Minimal FSM
-
-No counters
-
-Single-stage datapath register
-
-8. Impact Description
-
-This 8-bit per-beat zero detector provides fine-grained sparsity metadata with minimal hardware overhead. It simplifies control logic, improves timing closure, and enables downstream engines to implement flexible block-level sparse optimizations without constraining the BDMA datapath.
-
-9. Success Criteria (Updated)
+## 9. Success Criteria
 
 Implementation is correct if:
+1. Zero detection correctly identifies all-zero blocks
+2. Non-zero detection correctly identifies blocks with non-zero data
+3. Block size configuration works for all supported sizes (16, 32, 64, 128)
+4. Bypass mode passes data through transparently
+5. Flow control handles backpressure correctly on both input and output
+6. Block result handshaking operates independently from data path
+7. Error detection triggers on overflow conditions
+8. State machine transitions correctly through all states
+9. Reset brings design into known safe state
+10. Design passes all simulation tests
+11. Design synthesizes without errors or warnings
+12. All registers have explicit reset values
 
-Each data beat produces exactly one zero-detection result
+---
 
-Zero beats are correctly identified
+## 10. Deliverable
 
-Non-zero beats are correctly identified
-
-Bypass mode passes data transparently
-
-Flow control handles backpressure correctly
-
-Metadata handshake is independent of data
-
-Reset clears all state
-
-Disable clears all state
-
-RTL synthesizes cleanly
+Produce a complete RTL implementation of **NV_NVDLA_BDMA_zero_detector** that satisfies all requirements above. The implementation must be:
+- Fully synthesizable
+- Properly integrated with BDMA streaming interface
+- Support dynamic bypass mode
+- Include error detection and recovery
 
