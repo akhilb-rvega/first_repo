@@ -129,3 +129,34 @@ async def test_pass_through_data_integrity(dut):
 
     assert dut.nvdla_bdma_out_data_pd.value == test_value, \
         "Pass-through data mismatch"
+
+
+def test_tb_NV_NVDLA_BDMA_zero_detector_runner():
+    """Test runner for cocotb-test"""
+    # run(
+    #     verilog_sources=["sources/vmod/nvdla/bdma/NV_NVDLA_BDMA_zero_detector.v"],
+    #     toplevel="NV_NVDLA_BDMA_zero_detector",
+    #     module="tb_NV_NVDLA_BDMA_zero_detector_hidden",
+    #     simulator="icarus",
+    #     compile_args=["-g2012", "-I", "sources"],
+    # )
+
+
+    sim = os.getenv("SIM", "icarus")
+    proj_path = Path(__file__).resolve().parent.parent
+    
+    sources = [
+        proj_path / "sources/vmod/nvdla/bdma/NV_NVDLA_BDMA_zero_detector.v",
+    ]
+    
+    runner = get_runner(sim)
+    runner.build(
+        sources=sources,
+        hdl_toplevel="NV_NVDLA_BDMA_zero_detector",
+        always=True,
+    )
+    
+    runner.test(
+        hdl_toplevel="NV_NVDLA_BDMA_zero_detector",
+        test_module="tb_NV_NVDLA_BDMA_zero_detector_hidden"
+    )
