@@ -1166,12 +1166,8 @@ def test_NV_NVDLA_BDMA_zero_detector_hidden():
     ])
     rams_model_sources = sorted(str(f) for f in rams_model_dir.glob("*.v"))
     rams_synth_sources = sorted(str(f) for f in rams_synth_dir.glob("*.v"))
-    #rtl_sources = sorted(str(f) for f in rtl_dir.glob("*.v"))
-    #rtl_sources = sorted([
-    #  str(f) for f in rtl_dir.glob("*.v")
-    #  if f.name not in ["sram_stub.v", "simple_tb_assembly_buffer.v", "nv_ram_sim_models.v",
-    #  "ram_stubs.v"]
-    #])
+    # Exclude patterns for RTL sources
+    EXCLUDE_PATTERNS = ["sram_stub", "simple_tb_assembly_buffer", "nv_ram_sim_models", "ram_stubs"]
     rtl_sources = sorted(
         str(f) for f in rtl_dir.glob("*.v")
         if not any(p in f.name for p in EXCLUDE_PATTERNS)
