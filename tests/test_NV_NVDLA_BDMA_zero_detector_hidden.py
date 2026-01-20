@@ -12,13 +12,20 @@ from cocotb.triggers import RisingEdge, Timer
 import glob
 from cocotb_test.simulator import run
 
-import cocotb
-from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, FallingEdge, Timer
-from cocotb.result import TestFailure
-import random
 
-CLK_PERIOD = 10  # ns
+# Set UTF-8 encoding for Python I/O operations
+os.environ["PYTHONIOENCODING"] = "utf-8"
+
+# Reconfigure stdout/stderr to use UTF-8 encoding (especially important on Windows)
+if sys.platform == 'win32':
+    import codecs
+    if hasattr(sys.stdout, 'buffer'):
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, errors='replace')
+    if hasattr(sys.stderr, 'buffer'):
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, errors='replace')
+
+
+CLK_PERIOD_NS = 10
 
 
 async def reset_dut(dut):
@@ -70,7 +77,7 @@ async def accept_zero_flag(dut):
 @cocotb.test()
 async def test_zero_detector(dut):
     """Main test: runs multiple sub-tests"""
-    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD, units="ns").start())
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
     await reset_dut(dut)
 
     dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
