@@ -1,17 +1,19 @@
 // ================================================================
-//  NV_NVDLA_BDMA_zero_detector (NO beat_cnt VERSION)
+// NV_NVDLA_BDMA_zero_detector
+// 8-bit, per-beat zero detector (standalone-friendly)
 // ================================================================
 `timescale 1ns/1ns
+
 module NV_NVDLA_BDMA_zero_detector (
     input  wire        nvdla_core_clk,
     input  wire        nvdla_core_rstn,
 
     // Configuration
-    input  wire [1:0]  nvdla_bdma_reg2zd_cfg_block_size, // unused
+    input  wire [1:0]  nvdla_bdma_reg2zd_cfg_block_size, // reserved
     input  wire        nvdla_bdma_reg2zd_cfg_enable,
 
-    // Error reporting (unused, tied low)
-    output reg         nvdla_bdma_zd2reg_error_overflow,
+    // Error reporting (unused)
+    output wire        nvdla_bdma_zd2reg_error_overflow,
 
     // Input stream
     input  wire [7:0]  nvdla_bdma_inp_data_pd,
@@ -23,28 +25,37 @@ module NV_NVDLA_BDMA_zero_detector (
     output wire        nvdla_bdma_out_data_pvld,
     input  wire        nvdla_bdma_out_data_prdy,
 
-    // Block result
+    // Zero detection result (per beat)
     output reg         nvdla_bdma_out_blk_is_zero,
     output reg         nvdla_bdma_out_blk_is_zero_vld,
     input  wire        nvdla_bdma_out_blk_is_zero_rdy
 );
 
     // ------------------------------------------------------------
-    // FSM
+    // Error permanently disabled
     // ------------------------------------------------------------
-    localparam ST_IDLE  = 1'b0;
-    localparam ST_DONE  = 1'b1;
-
-    reg state, next_state;
+    assign nvdla_bdma_zd2reg_error_overflow = 1'b0;
 
     // ------------------------------------------------------------
-    // Data register
+    // FSM (metadata lifetime only)
     // ------------------------------------------------------------
-    reg [7:0] data_pd_r;
-    reg       data_pvld_r;
+    localparam ST_IDLE = 1'b0;
+    localparam ST_DONE = 1'b1;
+
+    reg state, state_n;
 
     // ------------------------------------------------------------
-    // Handshake
+    // Data buffering (enabled mode only)
+    // ------------------------------------------------------------
+    reg [7:0] data_r;
+    reg       data_vld_r;
+
+    // Zero metadata buffer
+    reg       zero_r;
+    reg       zero_vld_r;
+
+    // ------------------------------------------------------------
+    // Handshakes
     // ------------------------------------------------------------
     wire in_accept;
     wire out_accept;
@@ -56,34 +67,38 @@ module NV_NVDLA_BDMA_zero_detector (
                         nvdla_bdma_out_data_prdy;
 
     // ------------------------------------------------------------
-    // Ready logic - with buffering in both modes
+    // Ready logic
     // ------------------------------------------------------------
-    assign nvdla_bdma_inp_data_prdy = (!data_pvld_r || nvdla_bdma_out_data_prdy);
+    assign nvdla_bdma_inp_data_prdy =
+        !nvdla_bdma_reg2zd_cfg_enable ? nvdla_bdma_out_data_prdy :
+        !data_vld_r || nvdla_bdma_out_data_prdy;
 
     // ------------------------------------------------------------
-    // Output datapath - always use buffered path
+    // Output datapath
     // ------------------------------------------------------------
-    assign nvdla_bdma_out_data_pd = data_pd_r;
-    assign nvdla_bdma_out_data_pvld = data_pvld_r;
+    assign nvdla_bdma_out_data_pd =
+        nvdla_bdma_reg2zd_cfg_enable ? data_r :
+        nvdla_bdma_inp_data_pd;
+
+    assign nvdla_bdma_out_data_pvld =
+        nvdla_bdma_reg2zd_cfg_enable ? data_vld_r :
+        nvdla_bdma_inp_data_pvld;
 
     // ------------------------------------------------------------
-    // FSM next-state
+    // FSM next-state logic
     // ------------------------------------------------------------
     always @(*) begin
-        next_state = state;
+        state_n = state;
         case (state)
             ST_IDLE: begin
                 if (nvdla_bdma_reg2zd_cfg_enable && in_accept)
-                    next_state = ST_DONE;
+                    state_n = ST_DONE;
             end
-
             ST_DONE: begin
                 if (nvdla_bdma_out_blk_is_zero_vld &&
                     nvdla_bdma_out_blk_is_zero_rdy)
-                    next_state = ST_IDLE;
+                    state_n = ST_IDLE;
             end
-
-            default: next_state = ST_IDLE;
         endcase
     end
 
@@ -92,36 +107,50 @@ module NV_NVDLA_BDMA_zero_detector (
     // ------------------------------------------------------------
     always @(posedge nvdla_core_clk or negedge nvdla_core_rstn) begin
         if (!nvdla_core_rstn) begin
-            state                             <= ST_IDLE;
-            data_pd_r                         <= 8'd0;
-            data_pvld_r                       <= 1'b0;
-            nvdla_bdma_out_blk_is_zero         <= 1'b1;
-            nvdla_bdma_out_blk_is_zero_vld     <= 1'b0;
-            nvdla_bdma_zd2reg_error_overflow   <= 1'b0;
+            state                           <= ST_IDLE;
+            data_r                          <= 8'd0;
+            data_vld_r                      <= 1'b0;
+            zero_r                          <= 1'b1;
+            zero_vld_r                      <= 1'b0;
+            nvdla_bdma_out_blk_is_zero      <= 1'b1;
+            nvdla_bdma_out_blk_is_zero_vld  <= 1'b0;
         end else begin
-            state <= next_state;
+            state <= state_n;
 
-            // Error permanently disabled
-            nvdla_bdma_zd2reg_error_overflow <= 1'b0;
-
-            // Data register - always buffer data for both bypass and enabled modes
-            if (in_accept) begin
-                data_pd_r   <= nvdla_bdma_inp_data_pd;
-                data_pvld_r <= 1'b1;
-            end else if (out_accept) begin
-                data_pvld_r <= 1'b0;
-            end
-
-            // Zero detection and metadata - only when enabled
+            // ----------------------------------------------------
+            // Disable = deterministic clear
+            // ----------------------------------------------------
             if (!nvdla_bdma_reg2zd_cfg_enable) begin
+                data_vld_r                     <= 1'b0;
+                zero_vld_r                     <= 1'b0;
                 nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
             end else begin
+                // -----------------------------------------------
+                // Input accept → register data & metadata
+                // -----------------------------------------------
                 if (in_accept) begin
-                    nvdla_bdma_out_blk_is_zero     <= (nvdla_bdma_inp_data_pd == 8'd0);
+                    data_r     <= nvdla_bdma_inp_data_pd;
+                    data_vld_r <= 1'b1;
+                    zero_r     <= (nvdla_bdma_inp_data_pd == 8'd0);
+                    zero_vld_r <= 1'b1;
+                end
+                // -----------------------------------------------
+                // Output accept → clear data buffer
+                // -----------------------------------------------
+                else if (out_accept) begin
+                    data_vld_r <= 1'b0;
+                end
+
+                // -----------------------------------------------
+                // Metadata handshake
+                // -----------------------------------------------
+                if (state == ST_DONE && zero_vld_r) begin
+                    nvdla_bdma_out_blk_is_zero     <= zero_r;
                     nvdla_bdma_out_blk_is_zero_vld <= 1'b1;
                 end else if (nvdla_bdma_out_blk_is_zero_vld &&
                              nvdla_bdma_out_blk_is_zero_rdy) begin
                     nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
+                    zero_vld_r                     <= 1'b0;
                 end
             end
         end
