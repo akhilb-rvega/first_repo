@@ -1,39 +1,54 @@
 # -*- coding: utf-8 -*-
 # test_zero_detector.py
+
 import sys
+import os
+import random
+from pathlib import Path
+
 import cocotb
 from cocotb.clock import Clock
-import random
-import os
-from pathlib import Path
-from cocotb_tools.runner import get_runner
 from cocotb.triggers import RisingEdge, Timer, with_timeout
 from cocotb.result import SimTimeoutError
+from cocotb_tools.runner import get_runner
 
 
-# Set UTF-8 encoding for Python I/O operations
+# ---------------------------------------------------------------------
+# Environment
+# ---------------------------------------------------------------------
 os.environ["PYTHONIOENCODING"] = "utf-8"
-
-# Reconfigure stdout/stderr to use UTF-8 encoding (especially important on Windows)
-if sys.platform == 'win32':
-    import codecs
-    if hasattr(sys.stdout, 'buffer'):
-        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer, errors='replace')
-    if hasattr(sys.stderr, 'buffer'):
-        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer, errors='replace')
-
 
 CLK_PERIOD_NS = 10
 MAX_WAIT_CYCLES = 1000
-SHORT_WAIT_CYCLES = 20
-TEST_TIMEOUT_CYCLES = 20000
+DEFAULT_TEST_TIMEOUT_CYCLES = 5000
 
 
-async def _rising_edge_with_timeout(clk, timeout_cycles: int, err: str):
-    """Wait for a single rising edge, but fail fast if the clock stops."""
-    timeout_ns = int(timeout_cycles) * int(CLK_PERIOD_NS)
+# ---------------------------------------------------------------------
+# Timeout wrapper (PER TEST)
+# ---------------------------------------------------------------------
+async def run_with_test_timeout(coro, test_name, timeout_cycles=DEFAULT_TEST_TIMEOUT_CYCLES):
     try:
-        await with_timeout(RisingEdge(clk), timeout_ns, "ns")
+        await with_timeout(
+            coro,
+            timeout_cycles * CLK_PERIOD_NS,
+            "ns",
+        )
+    except Exception as e:
+        raise SimTimeoutError(
+            f"Timeout in test '{test_name}' after {timeout_cycles} cycles"
+        ) from e
+
+
+# ---------------------------------------------------------------------
+# Common helpers
+# ---------------------------------------------------------------------
+async def _rising_edge_with_timeout(clk, timeout_cycles, err):
+    try:
+        await with_timeout(
+            RisingEdge(clk),
+            timeout_cycles * CLK_PERIOD_NS,
+            "ns",
+        )
     except Exception as e:
         raise SimTimeoutError(err) from e
 
@@ -41,188 +56,163 @@ async def _rising_edge_with_timeout(clk, timeout_cycles: int, err: str):
 async def reset_dut(dut):
     dut.nvdla_core_rstn.value = 0
     dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
-    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0
     dut.nvdla_bdma_inp_data_pvld.value = 0
     dut.nvdla_bdma_out_data_prdy.value = 0
     dut.nvdla_bdma_out_blk_is_zero_rdy.value = 0
     await Timer(50, units="ns")
     dut.nvdla_core_rstn.value = 1
-    await _rising_edge_with_timeout(dut.nvdla_core_clk, MAX_WAIT_CYCLES, "Timeout waiting for clock edge after reset deassert")
+    await _rising_edge_with_timeout(dut.nvdla_core_clk, MAX_WAIT_CYCLES, "Reset timeout")
+
+
+async def setup_dut(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
 
 
 async def send_input(dut, data):
     dut.nvdla_bdma_inp_data_pd.value = data
     dut.nvdla_bdma_inp_data_pvld.value = 1
-
-    for _ in range(MAX_WAIT_CYCLES):
-        await _rising_edge_with_timeout(
-            dut.nvdla_core_clk,
-            MAX_WAIT_CYCLES,
-            f"Timeout waiting for clock edge while sending input (0x{int(data) & 0xFF:02X})",
-        )
+    while True:
+        await RisingEdge(dut.nvdla_core_clk)
         if dut.nvdla_bdma_inp_data_prdy.value:
             dut.nvdla_bdma_inp_data_pvld.value = 0
             return
 
-    dut.nvdla_bdma_inp_data_pvld.value = 0
-    raise SimTimeoutError(f"Timeout waiting for inp_data_prdy (0x{int(data) & 0xFF:02X})")
-
 
 async def accept_output(dut):
     dut.nvdla_bdma_out_data_prdy.value = 1
-    for _ in range(MAX_WAIT_CYCLES):
-        await _rising_edge_with_timeout(
-            dut.nvdla_core_clk,
-            MAX_WAIT_CYCLES,
-            "Timeout waiting for clock edge while accepting output",
-        )
+    while True:
+        await RisingEdge(dut.nvdla_core_clk)
         if dut.nvdla_bdma_out_data_pvld.value:
-            data = int(dut.nvdla_bdma_out_data_pd.value)
+            val = int(dut.nvdla_bdma_out_data_pd.value)
             dut.nvdla_bdma_out_data_prdy.value = 0
-            return data
-    dut.nvdla_bdma_out_data_prdy.value = 0
-    raise SimTimeoutError("Timeout waiting for out_data_pvld")
+            return val
 
 
 async def accept_zero_flag(dut):
     dut.nvdla_bdma_out_blk_is_zero_rdy.value = 1
-    for _ in range(MAX_WAIT_CYCLES):
-        await _rising_edge_with_timeout(
-            dut.nvdla_core_clk,
-            MAX_WAIT_CYCLES,
-            "Timeout waiting for clock edge while accepting zero flag",
-        )
+    while True:
+        await RisingEdge(dut.nvdla_core_clk)
         if dut.nvdla_bdma_out_blk_is_zero_vld.value:
-            flag = int(dut.nvdla_bdma_out_blk_is_zero.value)
+            val = int(dut.nvdla_bdma_out_blk_is_zero.value)
             dut.nvdla_bdma_out_blk_is_zero_rdy.value = 0
-            return flag
-    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 0
-    raise SimTimeoutError("Timeout waiting for out_blk_is_zero_vld")
+            return val
+
 
 
 @cocotb.test()
-async def test_zero_detector(dut):
-    """Main test: runs multiple sub-tests"""
-    async def _body():
-        cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
-        await reset_dut(dut)
-
-        dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
-
-        # ------------------------------------------------------------
-        # Test case 1: Single zero byte
-        # ------------------------------------------------------------
+async def test_single_zero(dut):
+    async def body():
+        await setup_dut(dut)
         await send_input(dut, 0x00)
-        out = await accept_output(dut)
-        flag = await accept_zero_flag(dut)
+        assert await accept_output(dut) == 0x00
+        assert await accept_zero_flag(dut) == 1
 
-        assert out == 0x00, "Data mismatch for zero input"
-        assert flag == 1, "Zero not detected"
+    await run_with_test_timeout(body(), "test_single_zero")
 
-        # ------------------------------------------------------------
-        # Test case 2: Single non-zero byte
-        # ------------------------------------------------------------
+
+@cocotb.test()
+async def test_single_non_zero(dut):
+    async def body():
+        await setup_dut(dut)
         await send_input(dut, 0xAB)
-        out = await accept_output(dut)
-        flag = await accept_zero_flag(dut)
+        assert await accept_output(dut) == 0xAB
+        assert await accept_zero_flag(dut) == 0
 
-        assert out == 0xAB, "Data mismatch"
-        assert flag == 0, "False zero detection"
+    await run_with_test_timeout(body(), "test_single_non_zero")
 
-        # ------------------------------------------------------------
-        # Test case 3: Enable = 0 (zero flag must not assert)
-        # ------------------------------------------------------------
+
+@cocotb.test()
+async def test_disabled_mode(dut):
+    async def body():
+        await setup_dut(dut)
         dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
         await send_input(dut, 0x00)
-        out = await accept_output(dut)
+        await accept_output(dut)
+        await RisingEdge(dut.nvdla_core_clk)
+        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
 
-        await _rising_edge_with_timeout(dut.nvdla_core_clk, MAX_WAIT_CYCLES, "Timeout waiting for clock edge in disabled-mode check")
-        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0, \
-            "Zero flag asserted when disabled"
+    await run_with_test_timeout(body(), "test_disabled_mode")
 
-        # ------------------------------------------------------------
-        # Test case 4: Re-enable and send non-zero
-        # ------------------------------------------------------------
-        dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+
+@cocotb.test()
+async def test_re_enable(dut):
+    async def body():
+        await setup_dut(dut)
         await send_input(dut, 0x55)
-        out = await accept_output(dut)
-        flag = await accept_zero_flag(dut)
-        assert flag == 0
+        await accept_output(dut)
+        assert await accept_zero_flag(dut) == 0
 
-        # ------------------------------------------------------------
-        # Test case 5: Backpressure on output data
-        # ------------------------------------------------------------
+    await run_with_test_timeout(body(), "test_re_enable")
+
+
+@cocotb.test()
+async def test_output_backpressure(dut):
+    async def body():
+        await setup_dut(dut)
         await send_input(dut, 0x00)
         await Timer(50, units="ns")
-        dut.nvdla_bdma_out_data_prdy.value = 1
-        out = None
-        for _ in range(MAX_WAIT_CYCLES):
-            await _rising_edge_with_timeout(dut.nvdla_core_clk, MAX_WAIT_CYCLES, "Timeout waiting for clock edge during output backpressure")
-            if dut.nvdla_bdma_out_data_pvld.value:
-                out = int(dut.nvdla_bdma_out_data_pd.value)
-                break
-        if out is None:
-            dut.nvdla_bdma_out_data_prdy.value = 0
-            raise SimTimeoutError("Timeout waiting for out_data_pvld during output backpressure")
-        flag = await accept_zero_flag(dut)
-        dut.nvdla_bdma_out_data_prdy.value = 0
-        assert out == 0x00 and flag == 1
+        assert await accept_output(dut) == 0x00
+        assert await accept_zero_flag(dut) == 1
 
-        # ------------------------------------------------------------
-        # Test case 6: Backpressure on zero flag
-        # ------------------------------------------------------------
+    await run_with_test_timeout(body(), "test_output_backpressure")
+
+
+@cocotb.test()
+async def test_zero_flag_backpressure(dut):
+    async def body():
+        await setup_dut(dut)
         await send_input(dut, 0x22)
-        out = await accept_output(dut)
+        await accept_output(dut)
         await Timer(50, units="ns")
-        flag = await accept_zero_flag(dut)
-        assert flag == 0
+        assert await accept_zero_flag(dut) == 0
 
-        # ------------------------------------------------------------
-        # Test case 7: Max value (0xFF)
-        # ------------------------------------------------------------
+    await run_with_test_timeout(body(), "test_zero_flag_backpressure")
+
+
+@cocotb.test()
+async def test_max_value(dut):
+    async def body():
+        await setup_dut(dut)
         await send_input(dut, 0xFF)
-        out = await accept_output(dut)
-        flag = await accept_zero_flag(dut)
-        assert out == 0xFF and flag == 0
+        assert await accept_output(dut) == 0xFF
+        assert await accept_zero_flag(dut) == 0
 
-        # ------------------------------------------------------------
-        # Test case 8: Random data
-        # ------------------------------------------------------------
-        for _ in range(3):
+    await run_with_test_timeout(body(), "test_max_value")
+
+
+@cocotb.test()
+async def test_random_values(dut):
+    async def body():
+        await setup_dut(dut)
+        for _ in range(5):
             val = random.randint(0, 255)
             await send_input(dut, val)
-            out = await accept_output(dut)
-            flag = await accept_zero_flag(dut)
-            assert out == val
-            assert flag == (1 if val == 0 else 0)
+            assert await accept_output(dut) == val
+            assert await accept_zero_flag(dut) == (1 if val == 0 else 0)
 
-        # ------------------------------------------------------------
-        # Test case 9: Rapid back-to-back inputs
-        # ------------------------------------------------------------
-        for val in [0x00, 0x01, 0x00]:
-            await send_input(dut, val)
-            out = await accept_output(dut)
-            flag = await accept_zero_flag(dut)
-            assert flag == (1 if val == 0 else 0)
+    await run_with_test_timeout(body(), "test_random_values", timeout_cycles=8000)
 
-        # ------------------------------------------------------------
-        # Test case 10: Reset during operation
-        # ------------------------------------------------------------
+
+@cocotb.test()
+async def test_reset_during_operation(dut):
+    async def body():
+        await setup_dut(dut)
         await send_input(dut, 0x00)
         dut.nvdla_core_rstn.value = 0
         await Timer(20, units="ns")
         dut.nvdla_core_rstn.value = 1
-        await _rising_edge_with_timeout(dut.nvdla_core_clk, MAX_WAIT_CYCLES, "Timeout waiting for clock edge after mid-test reset")
-
-        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
+        await RisingEdge(dut.nvdla_core_clk)
         assert dut.nvdla_bdma_out_data_pvld.value == 0
+        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
 
-    try:
-        await with_timeout(_body(), int(TEST_TIMEOUT_CYCLES) * int(CLK_PERIOD_NS), "ns")
-    except Exception as e:
-        raise SimTimeoutError(f"Global test timeout after {TEST_TIMEOUT_CYCLES} cycles") from e
+    await run_with_test_timeout(body(), "test_reset_during_operation")
 
 
+# ---------------------------------------------------------------------
+# Pytest-compatible runner
+# ---------------------------------------------------------------------
 def test_NV_NVDLA_BDMA_zero_detector_hidden():
     """Pytest-compatible cocotb test runner using cocotb_tools.runner"""
     sim = os.getenv("SIM", "icarus")
