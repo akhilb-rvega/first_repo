@@ -6,11 +6,9 @@ from cocotb.clock import Clock
 import random
 import os
 from pathlib import Path
-from collections import deque
 from cocotb_tools.runner import get_runner
-from cocotb.triggers import RisingEdge, Timer
-import glob
-from cocotb_test.simulator import run
+from cocotb.triggers import RisingEdge, Timer, with_timeout
+from cocotb.result import SimTimeoutError
 
 
 # Set UTF-8 encoding for Python I/O operations
@@ -26,6 +24,18 @@ if sys.platform == 'win32':
 
 
 CLK_PERIOD_NS = 10
+MAX_WAIT_CYCLES = 1000
+SHORT_WAIT_CYCLES = 20
+TEST_TIMEOUT_CYCLES = 20000
+
+
+async def _rising_edge_with_timeout(clk, timeout_cycles: int, err: str):
+    """Wait for a single rising edge, but fail fast if the clock stops."""
+    timeout_ns = int(timeout_cycles) * int(CLK_PERIOD_NS)
+    try:
+        await with_timeout(RisingEdge(clk), timeout_ns, "ns")
+    except Exception as e:
+        raise SimTimeoutError(err) from e
 
 
 async def reset_dut(dut):
@@ -37,150 +47,180 @@ async def reset_dut(dut):
     dut.nvdla_bdma_out_blk_is_zero_rdy.value = 0
     await Timer(50, units="ns")
     dut.nvdla_core_rstn.value = 1
-    await RisingEdge(dut.nvdla_core_clk)
+    await _rising_edge_with_timeout(dut.nvdla_core_clk, MAX_WAIT_CYCLES, "Timeout waiting for clock edge after reset deassert")
 
 
 async def send_input(dut, data):
     dut.nvdla_bdma_inp_data_pd.value = data
     dut.nvdla_bdma_inp_data_pvld.value = 1
 
-    while True:
-        await RisingEdge(dut.nvdla_core_clk)
+    for _ in range(MAX_WAIT_CYCLES):
+        await _rising_edge_with_timeout(
+            dut.nvdla_core_clk,
+            MAX_WAIT_CYCLES,
+            f"Timeout waiting for clock edge while sending input (0x{int(data) & 0xFF:02X})",
+        )
         if dut.nvdla_bdma_inp_data_prdy.value:
-            break
+            dut.nvdla_bdma_inp_data_pvld.value = 0
+            return
 
     dut.nvdla_bdma_inp_data_pvld.value = 0
+    raise SimTimeoutError(f"Timeout waiting for inp_data_prdy (0x{int(data) & 0xFF:02X})")
 
 
 async def accept_output(dut):
     dut.nvdla_bdma_out_data_prdy.value = 1
-    while True:
-        await RisingEdge(dut.nvdla_core_clk)
+    for _ in range(MAX_WAIT_CYCLES):
+        await _rising_edge_with_timeout(
+            dut.nvdla_core_clk,
+            MAX_WAIT_CYCLES,
+            "Timeout waiting for clock edge while accepting output",
+        )
         if dut.nvdla_bdma_out_data_pvld.value:
             data = int(dut.nvdla_bdma_out_data_pd.value)
-            break
+            dut.nvdla_bdma_out_data_prdy.value = 0
+            return data
     dut.nvdla_bdma_out_data_prdy.value = 0
-    return data
+    raise SimTimeoutError("Timeout waiting for out_data_pvld")
 
 
 async def accept_zero_flag(dut):
     dut.nvdla_bdma_out_blk_is_zero_rdy.value = 1
-    while True:
-        await RisingEdge(dut.nvdla_core_clk)
+    for _ in range(MAX_WAIT_CYCLES):
+        await _rising_edge_with_timeout(
+            dut.nvdla_core_clk,
+            MAX_WAIT_CYCLES,
+            "Timeout waiting for clock edge while accepting zero flag",
+        )
         if dut.nvdla_bdma_out_blk_is_zero_vld.value:
             flag = int(dut.nvdla_bdma_out_blk_is_zero.value)
-            break
+            dut.nvdla_bdma_out_blk_is_zero_rdy.value = 0
+            return flag
     dut.nvdla_bdma_out_blk_is_zero_rdy.value = 0
-    return flag
+    raise SimTimeoutError("Timeout waiting for out_blk_is_zero_vld")
 
 
 @cocotb.test()
 async def test_zero_detector(dut):
     """Main test: runs multiple sub-tests"""
-    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
-    await reset_dut(dut)
+    async def _body():
+        cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
+        await reset_dut(dut)
 
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+        dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
 
-    # ------------------------------------------------------------
-    # Test case 1: Single zero byte
-    # ------------------------------------------------------------
-    await send_input(dut, 0x00)
-    out = await accept_output(dut)
-    flag = await accept_zero_flag(dut)
-
-    assert out == 0x00, "Data mismatch for zero input"
-    assert flag == 1, "Zero not detected"
-
-    # ------------------------------------------------------------
-    # Test case 2: Single non-zero byte
-    # ------------------------------------------------------------
-    await send_input(dut, 0xAB)
-    out = await accept_output(dut)
-    flag = await accept_zero_flag(dut)
-
-    assert out == 0xAB, "Data mismatch"
-    assert flag == 0, "False zero detection"
-
-    # ------------------------------------------------------------
-    # Test case 3: Enable = 0 (zero flag must not assert)
-    # ------------------------------------------------------------
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
-    await send_input(dut, 0x00)
-    out = await accept_output(dut)
-
-    await RisingEdge(dut.nvdla_core_clk)
-    assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0, \
-        "Zero flag asserted when disabled"
-
-    # ------------------------------------------------------------
-    # Test case 4: Re-enable and send non-zero
-    # ------------------------------------------------------------
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
-    await send_input(dut, 0x55)
-    out = await accept_output(dut)
-    flag = await accept_zero_flag(dut)
-    assert flag == 0
-
-    # ------------------------------------------------------------
-    # Test case 5: Backpressure on output data
-    # ------------------------------------------------------------
-    await send_input(dut, 0x00)
-    await Timer(50, units="ns")
-    dut.nvdla_bdma_out_data_prdy.value = 1
-    await RisingEdge(dut.nvdla_core_clk)
-    out = int(dut.nvdla_bdma_out_data_pd.value)
-    flag = await accept_zero_flag(dut)
-    assert out == 0x00 and flag == 1
-
-    # ------------------------------------------------------------
-    # Test case 6: Backpressure on zero flag
-    # ------------------------------------------------------------
-    await send_input(dut, 0x22)
-    out = await accept_output(dut)
-    await Timer(50, units="ns")
-    flag = await accept_zero_flag(dut)
-    assert flag == 0
-
-    # ------------------------------------------------------------
-    # Test case 7: Max value (0xFF)
-    # ------------------------------------------------------------
-    await send_input(dut, 0xFF)
-    out = await accept_output(dut)
-    flag = await accept_zero_flag(dut)
-    assert out == 0xFF and flag == 0
-
-    # ------------------------------------------------------------
-    # Test case 8: Random data
-    # ------------------------------------------------------------
-    for _ in range(3):
-        val = random.randint(0, 255)
-        await send_input(dut, val)
+        # ------------------------------------------------------------
+        # Test case 1: Single zero byte
+        # ------------------------------------------------------------
+        await send_input(dut, 0x00)
         out = await accept_output(dut)
         flag = await accept_zero_flag(dut)
-        assert out == val
-        assert flag == (1 if val == 0 else 0)
 
-    # ------------------------------------------------------------
-    # Test case 9: Rapid back-to-back inputs
-    # ------------------------------------------------------------
-    for val in [0x00, 0x01, 0x00]:
-        await send_input(dut, val)
+        assert out == 0x00, "Data mismatch for zero input"
+        assert flag == 1, "Zero not detected"
+
+        # ------------------------------------------------------------
+        # Test case 2: Single non-zero byte
+        # ------------------------------------------------------------
+        await send_input(dut, 0xAB)
         out = await accept_output(dut)
         flag = await accept_zero_flag(dut)
-        assert flag == (1 if val == 0 else 0)
 
-    # ------------------------------------------------------------
-    # Test case 10: Reset during operation
-    # ------------------------------------------------------------
-    await send_input(dut, 0x00)
-    dut.nvdla_core_rstn.value = 0
-    await Timer(20, units="ns")
-    dut.nvdla_core_rstn.value = 1
-    await RisingEdge(dut.nvdla_core_clk)
+        assert out == 0xAB, "Data mismatch"
+        assert flag == 0, "False zero detection"
 
-    assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
-    assert dut.nvdla_bdma_out_data_pvld.value == 0
+        # ------------------------------------------------------------
+        # Test case 3: Enable = 0 (zero flag must not assert)
+        # ------------------------------------------------------------
+        dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
+        await send_input(dut, 0x00)
+        out = await accept_output(dut)
+
+        await _rising_edge_with_timeout(dut.nvdla_core_clk, MAX_WAIT_CYCLES, "Timeout waiting for clock edge in disabled-mode check")
+        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0, \
+            "Zero flag asserted when disabled"
+
+        # ------------------------------------------------------------
+        # Test case 4: Re-enable and send non-zero
+        # ------------------------------------------------------------
+        dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+        await send_input(dut, 0x55)
+        out = await accept_output(dut)
+        flag = await accept_zero_flag(dut)
+        assert flag == 0
+
+        # ------------------------------------------------------------
+        # Test case 5: Backpressure on output data
+        # ------------------------------------------------------------
+        await send_input(dut, 0x00)
+        await Timer(50, units="ns")
+        dut.nvdla_bdma_out_data_prdy.value = 1
+        out = None
+        for _ in range(MAX_WAIT_CYCLES):
+            await _rising_edge_with_timeout(dut.nvdla_core_clk, MAX_WAIT_CYCLES, "Timeout waiting for clock edge during output backpressure")
+            if dut.nvdla_bdma_out_data_pvld.value:
+                out = int(dut.nvdla_bdma_out_data_pd.value)
+                break
+        if out is None:
+            dut.nvdla_bdma_out_data_prdy.value = 0
+            raise SimTimeoutError("Timeout waiting for out_data_pvld during output backpressure")
+        flag = await accept_zero_flag(dut)
+        dut.nvdla_bdma_out_data_prdy.value = 0
+        assert out == 0x00 and flag == 1
+
+        # ------------------------------------------------------------
+        # Test case 6: Backpressure on zero flag
+        # ------------------------------------------------------------
+        await send_input(dut, 0x22)
+        out = await accept_output(dut)
+        await Timer(50, units="ns")
+        flag = await accept_zero_flag(dut)
+        assert flag == 0
+
+        # ------------------------------------------------------------
+        # Test case 7: Max value (0xFF)
+        # ------------------------------------------------------------
+        await send_input(dut, 0xFF)
+        out = await accept_output(dut)
+        flag = await accept_zero_flag(dut)
+        assert out == 0xFF and flag == 0
+
+        # ------------------------------------------------------------
+        # Test case 8: Random data
+        # ------------------------------------------------------------
+        for _ in range(3):
+            val = random.randint(0, 255)
+            await send_input(dut, val)
+            out = await accept_output(dut)
+            flag = await accept_zero_flag(dut)
+            assert out == val
+            assert flag == (1 if val == 0 else 0)
+
+        # ------------------------------------------------------------
+        # Test case 9: Rapid back-to-back inputs
+        # ------------------------------------------------------------
+        for val in [0x00, 0x01, 0x00]:
+            await send_input(dut, val)
+            out = await accept_output(dut)
+            flag = await accept_zero_flag(dut)
+            assert flag == (1 if val == 0 else 0)
+
+        # ------------------------------------------------------------
+        # Test case 10: Reset during operation
+        # ------------------------------------------------------------
+        await send_input(dut, 0x00)
+        dut.nvdla_core_rstn.value = 0
+        await Timer(20, units="ns")
+        dut.nvdla_core_rstn.value = 1
+        await _rising_edge_with_timeout(dut.nvdla_core_clk, MAX_WAIT_CYCLES, "Timeout waiting for clock edge after mid-test reset")
+
+        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
+        assert dut.nvdla_bdma_out_data_pvld.value == 0
+
+    try:
+        await with_timeout(_body(), int(TEST_TIMEOUT_CYCLES) * int(CLK_PERIOD_NS), "ns")
+    except Exception as e:
+        raise SimTimeoutError(f"Global test timeout after {TEST_TIMEOUT_CYCLES} cycles") from e
 
 
 def test_NV_NVDLA_BDMA_zero_detector_hidden():
