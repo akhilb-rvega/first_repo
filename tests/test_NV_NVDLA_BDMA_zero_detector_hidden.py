@@ -216,61 +216,6 @@ async def cocotb_randomized_fuzz(dut):
         await run_block_test(dut, cfg, force_nonzero)
 
 
-# =============================================================================
-# Pytest entry point (ONLY thing pytest collects)
-# =============================================================================
-def test_NV_NVDLA_BDMA_zero_detector_hidden():
-    proj_dir = Path(__file__).resolve().parent.parent
-
-    run(
-        verilog_sources=[
-            str(proj_dir / "rtl" / "NV_NVDLA_BDMA_zero_detector.v")
-        ],
-        toplevel="NV_NVDLA_BDMA_zero_detector",
-        module="test_NV_NVDLA_BDMA_zero_detector_hidden",
-        simulator="iverilog",
-        waves=False,
-    )
-
-
-# ---------------------------------------------------------------------
-# Pytest-compatible runner
-# ---------------------------------------------------------------------
-def test_NV_NVDLA_BDMA_zero_detector_hidden():
-    """Pytest-compatible cocotb test runner using cocotb_tools.runner"""
-    import os
-    from pathlib import Path
-    from cocotb_tools.runner import get_runner
-
-    sim = os.getenv("SIM", "icarus")
-
-    proj_dir = Path(__file__).resolve().parent.parent
-    rtl_dir = proj_dir / "sources" / "vmod" / "nvdla" / "bdma"
-
-    # ------------------------------------------------------------------
-    # Compile ONLY the top module RTL
-    # ------------------------------------------------------------------
-    rtl_sources = [
-        str(rtl_dir / "NV_NVDLA_BDMA_zero_detector.v")
-    ]
-
-    # ------------------------------------------------------------------
-    # Runner flow
-    # ------------------------------------------------------------------
-    runner = get_runner(sim)
-
-    runner.build(
-        sources=rtl_sources,
-        hdl_toplevel="NV_NVDLA_BDMA_zero_detector",
-        build_args=["-g2012"],
-        always=True,
-    )
-
-    runner.test(
-        hdl_toplevel="NV_NVDLA_BDMA_zero_detector",
-        test_module="test_NV_NVDLA_BDMA_zero_detector_hidden",
-    )
-
 
 # ---------------------------------------------------------------------
 # Pytest-compatible runner
