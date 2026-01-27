@@ -10,7 +10,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
 from cocotb_test.simulator import run
-from cocotb_tools.runner import get_runner
+from cocotb.tools.runner import get_runner
 
 
 # =============================================================================
