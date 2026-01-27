@@ -41,6 +41,7 @@ module NV_NVDLA_BDMA_zero_detector (
     // ------------------------------------------------------------
     reg [7:0] beat_cnt;
     reg       any_nonzero;
+    reg       block_done_pending;
 
     // ------------------------------------------------------------
     // Input ready
@@ -60,15 +61,15 @@ module NV_NVDLA_BDMA_zero_detector (
             nvdla_bdma_out_blk_is_zero      <= 1'b0;
             beat_cnt                        <= 8'd0;
             any_nonzero                     <= 1'b0;
+            block_done_pending              <= 1'b0;
             nvdla_bdma_zd2reg_error_overflow<= 1'b0;
         end else begin
 
-            // ----------------------------------------------------
-            // Disable clears detector state
-            // ----------------------------------------------------
+            // Disable clears state
             if (!nvdla_bdma_reg2zd_cfg_enable) begin
                 beat_cnt                       <= 8'd0;
                 any_nonzero                    <= 1'b0;
+                block_done_pending             <= 1'b0;
                 nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
             end
 
@@ -79,24 +80,14 @@ module NV_NVDLA_BDMA_zero_detector (
                 nvdla_bdma_inp_data_pvld &&
                 nvdla_bdma_inp_data_prdy) begin
 
-                // Register data
                 nvdla_bdma_out_data_pd   <= nvdla_bdma_inp_data_pd;
                 nvdla_bdma_out_data_pvld <= 1'b1;
 
-                // Accumulate nonzero INCLUDING current beat
                 any_nonzero <= any_nonzero | (|nvdla_bdma_inp_data_pd);
 
-                // Last beat of block?
                 if (beat_cnt == block_beats - 1'b1) begin
-                    beat_cnt <= 8'd0;
-
-                    // Generate block result immediately
-                    nvdla_bdma_out_blk_is_zero
-                        <= ~(any_nonzero | (|nvdla_bdma_inp_data_pd));
-                    nvdla_bdma_out_blk_is_zero_vld <= 1'b1;
-
-                    // Reset for next block
-                    any_nonzero <= 1'b0;
+                    beat_cnt           <= 8'd0;
+                    block_done_pending <= 1'b1;
                 end else begin
                     beat_cnt <= beat_cnt + 1'b1;
                 end
@@ -108,6 +99,16 @@ module NV_NVDLA_BDMA_zero_detector (
             if (nvdla_bdma_out_data_pvld &&
                 nvdla_bdma_out_data_prdy) begin
                 nvdla_bdma_out_data_pvld <= 1'b0;
+
+                // Fire block result only AFTER last data beat is drained
+                if (block_done_pending) begin
+                    nvdla_bdma_out_blk_is_zero
+                        <= ~any_nonzero;
+                    nvdla_bdma_out_blk_is_zero_vld <= 1'b1;
+
+                    any_nonzero        <= 1'b0;
+                    block_done_pending <= 1'b0;
+                end
             end
 
             // ----------------------------------------------------
@@ -121,4 +122,3 @@ module NV_NVDLA_BDMA_zero_detector (
     end
 
 endmodule
-
