@@ -8,8 +8,6 @@ from pathlib import Path
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
-
-from cocotb_test.simulator import run
 from cocotb_tools.runner import get_runner
 
 # =============================================================================
@@ -94,7 +92,7 @@ async def run_block_test(dut, cfg, force_nonzero=False):
 # =============================================================================
 # Cocotb tests (NOT collected by pytest)
 # =============================================================================
-@cocotb.test()
+@cocotb.test(timeout_time=1, timeout_unit="us")
 async def cocotb_reset_test(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
     await reset_dut(dut)
@@ -103,56 +101,56 @@ async def cocotb_reset_test(dut):
     assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=1, timeout_unit="us")
 async def cocotb_block16_zero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
     await reset_dut(dut)
     await run_block_test(dut, cfg=0, force_nonzero=False)
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=1, timeout_unit="us")
 async def cocotb_block16_nonzero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
     await reset_dut(dut)
     await run_block_test(dut, cfg=0, force_nonzero=True)
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=1, timeout_unit="us")
 async def cocotb_block32_zero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
     await reset_dut(dut)
     await run_block_test(dut, cfg=1, force_nonzero=False)
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=1, timeout_unit="us")
 async def cocotb_block32_nonzero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
     await reset_dut(dut)
     await run_block_test(dut, cfg=1, force_nonzero=True)
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=1, timeout_unit="us")
 async def cocotb_block64_zero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
     await reset_dut(dut)
     await run_block_test(dut, cfg=2, force_nonzero=False)
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=1, timeout_unit="us")
 async def cocotb_block64_single_nonzero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
     await reset_dut(dut)
     await run_block_test(dut, cfg=2, force_nonzero=True)
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=1, timeout_unit="us")
 async def cocotb_block128_zero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
     await reset_dut(dut)
     await run_block_test(dut, cfg=3, force_nonzero=False)
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=1, timeout_unit="us")
 async def cocotb_disable_mid_block(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
     await reset_dut(dut)
@@ -170,7 +168,7 @@ async def cocotb_disable_mid_block(dut):
     assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=1, timeout_unit="us")
 async def cocotb_output_backpressure(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
     await reset_dut(dut)
@@ -211,49 +209,34 @@ def test_NV_NVDLA_BDMA_zero_detector_hidden():
 # ---------------------------------------------------------------------
 def test_NV_NVDLA_BDMA_zero_detector_hidden():
     """Pytest-compatible cocotb test runner using cocotb_tools.runner"""
+    import os
+    from pathlib import Path
+    from cocotb_tools.runner import get_runner
+
     sim = os.getenv("SIM", "icarus")
+
     proj_dir = Path(__file__).resolve().parent.parent
     rtl_dir = proj_dir / "sources" / "vmod" / "nvdla" / "bdma"
-    vlibs_dir = proj_dir / "sources" / "vmod" / "vlibs"
-    rams_model_dir = proj_dir / "sources" / "vmod" / "rams" / "model"
-    rams_synth_dir = proj_dir / "sources" / "vmod" / "rams" / "synth"
-    include_dir = proj_dir / "sources" / "vmod" / "include"
+
     # ------------------------------------------------------------------
-    # Collect sources
+    # Compile ONLY the top module RTL
     # ------------------------------------------------------------------
-    # Exclude duplicate SSYNC modules
-    vlibs_sources = sorted([
-        str(f) for f in vlibs_dir.glob("*.v")
-        if f.name not in ["p_SSYNC3DO.v", "p_SSYNC3DO_S_PPP.v"]
-    ])
-    rams_model_sources = sorted(str(f) for f in rams_model_dir.glob("*.v"))
-    rams_synth_sources = sorted(str(f) for f in rams_synth_dir.glob("*.v"))
-    # Exclude patterns for RTL sources
-    EXCLUDE_PATTERNS = ["sram_stub", "simple_tb_assembly_buffer", "nv_ram_sim_models", "ram_stubs"]
-    rtl_sources = sorted(
-        str(f) for f in rtl_dir.glob("*.v")
-        if not any(p in f.name for p in EXCLUDE_PATTERNS)
-    )
-    verilog_sources = (
-        vlibs_sources +
-        rams_model_sources +
-        rams_synth_sources +
-        rtl_sources
-    )
+    rtl_sources = [
+        str(rtl_dir / "NV_NVDLA_BDMA_zero_detector.v")
+    ]
+
     # ------------------------------------------------------------------
     # Runner flow
     # ------------------------------------------------------------------
     runner = get_runner(sim)
+
     runner.build(
-        sources=verilog_sources,
+        sources=rtl_sources,
         hdl_toplevel="NV_NVDLA_BDMA_zero_detector",
-        includes=[str(include_dir), str(vlibs_dir)],
-        defines={
-            "SYNTHESIS": 1, # Skip unsupported SV constructs in Icarus
-        },
         build_args=["-g2012"],
         always=True,
     )
+
     runner.test(
         hdl_toplevel="NV_NVDLA_BDMA_zero_detector",
         test_module="test_NV_NVDLA_BDMA_zero_detector_hidden",
