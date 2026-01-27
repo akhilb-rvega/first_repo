@@ -49,7 +49,7 @@ module NV_NVDLA_BDMA_zero_detector (
     assign nvdla_bdma_inp_data_prdy =
         (!nvdla_bdma_reg2zd_cfg_enable)
             ? nvdla_bdma_out_data_prdy
-            : ~nvdla_bdma_out_data_pvld;
+            : (~nvdla_bdma_out_data_pvld);
 
     // ------------------------------------------------------------
     // Sequential logic
@@ -65,7 +65,9 @@ module NV_NVDLA_BDMA_zero_detector (
             nvdla_bdma_zd2reg_error_overflow<= 1'b0;
         end else begin
 
-            // Disable clears state
+            // ----------------------------------------------------
+            // Disable → clean reset of detector state
+            // ----------------------------------------------------
             if (!nvdla_bdma_reg2zd_cfg_enable) begin
                 beat_cnt                       <= 8'd0;
                 any_nonzero                    <= 1'b0;
@@ -80,11 +82,15 @@ module NV_NVDLA_BDMA_zero_detector (
                 nvdla_bdma_inp_data_pvld &&
                 nvdla_bdma_inp_data_prdy) begin
 
+                // Register data
                 nvdla_bdma_out_data_pd   <= nvdla_bdma_inp_data_pd;
                 nvdla_bdma_out_data_pvld <= 1'b1;
 
-                any_nonzero <= any_nonzero | (|nvdla_bdma_inp_data_pd);
+                // Zero detect accumulation
+                if (|nvdla_bdma_inp_data_pd)
+                    any_nonzero <= 1'b1;
 
+                // Beat counter
                 if (beat_cnt == block_beats - 1'b1) begin
                     beat_cnt           <= 8'd0;
                     block_done_pending <= 1'b1;
@@ -94,20 +100,18 @@ module NV_NVDLA_BDMA_zero_detector (
             end
 
             // ----------------------------------------------------
-            // Output data handshake
+            // Output handshake
             // ----------------------------------------------------
             if (nvdla_bdma_out_data_pvld &&
                 nvdla_bdma_out_data_prdy) begin
                 nvdla_bdma_out_data_pvld <= 1'b0;
 
-                // Fire block result only AFTER last data beat is drained
+                // If block completed on this beat, raise result
                 if (block_done_pending) begin
-                    nvdla_bdma_out_blk_is_zero
-                        <= ~any_nonzero;
+                    nvdla_bdma_out_blk_is_zero     <= ~any_nonzero;
                     nvdla_bdma_out_blk_is_zero_vld <= 1'b1;
-
-                    any_nonzero        <= 1'b0;
-                    block_done_pending <= 1'b0;
+                    any_nonzero                    <= 1'b0;
+                    block_done_pending             <= 1'b0;
                 end
             end
 
