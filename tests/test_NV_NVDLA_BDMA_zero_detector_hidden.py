@@ -187,6 +187,23 @@ async def cocotb_output_backpressure(dut):
     dut.nvdla_bdma_out_data_prdy.value = 1
     await recv_data(dut)
 
+
+# =============================================================================
+# Pytest entry point (ONLY thing pytest collects)
+# =============================================================================
+def test_NV_NVDLA_BDMA_zero_detector_hidden():
+    proj_dir = Path(__file__).resolve().parent.parent
+
+    run(
+        verilog_sources=[
+            str(proj_dir / "rtl" / "NV_NVDLA_BDMA_zero_detector.v")
+        ],
+        toplevel="NV_NVDLA_BDMA_zero_detector",
+        module="test_NV_NVDLA_BDMA_zero_detector_hidden",
+        simulator="iverilog",
+        waves=False,
+    )
+
 # ---------------------------------------------------------------------
 # Pytest-compatible runner
 # ---------------------------------------------------------------------
