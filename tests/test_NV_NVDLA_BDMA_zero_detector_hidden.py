@@ -7,22 +7,12 @@ from pathlib import Path
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer, with_timeout
-from cocotb.result import SimTimeoutError
 from cocotb_tools.runner import get_runner
 
 CLK_PERIOD_NS = 10
 MAX_WAIT_CYCLES = 1000
 DEFAULT_TEST_TIMEOUT_CYCLES = 10000
 
-
-# -------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------
-async def run_with_test_timeout(coro, name, timeout_cycles=DEFAULT_TEST_TIMEOUT_CYCLES):
-    try:
-        await with_timeout(coro, timeout_cycles * CLK_PERIOD_NS, "ns")
-    except Exception as e:
-        raise SimTimeoutError(f"Timeout in test '{name}'") from e
 
 
 async def reset_dut(dut):
@@ -77,7 +67,7 @@ async def accept_zero_flag(dut):
 # New Multi-Beat Tests
 # -------------------------------------------------------------
 
-@cocotb.test()
+@cocotb.test(timeout_time=10, timeout_unit="us")
 async def test_block_16_all_zero(dut):
     async def body():
         await setup_dut(dut, block_cfg=0)  # 16 beats
@@ -89,7 +79,7 @@ async def test_block_16_all_zero(dut):
     await run_with_test_timeout(body(), "test_block_16_all_zero")
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=10, timeout_unit="us")
 async def test_block_16_one_nonzero(dut):
     async def body():
         await setup_dut(dut, block_cfg=0)
@@ -102,7 +92,7 @@ async def test_block_16_one_nonzero(dut):
     await run_with_test_timeout(body(), "test_block_16_one_nonzero")
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=10, timeout_unit="us")
 async def test_block_32_random(dut):
     async def body():
         await setup_dut(dut, block_cfg=1)  # 32 beats
@@ -119,7 +109,7 @@ async def test_block_32_random(dut):
     await run_with_test_timeout(body(), "test_block_32_random")
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=10, timeout_unit="us")
 async def test_block_backpressure_mid_block(dut):
     async def body():
         await setup_dut(dut, block_cfg=0)
@@ -133,7 +123,7 @@ async def test_block_backpressure_mid_block(dut):
     await run_with_test_timeout(body(), "test_block_backpressure_mid_block")
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=10, timeout_unit="us")
 async def test_block_boundary_separation(dut):
     async def body():
         await setup_dut(dut, block_cfg=0)
@@ -153,7 +143,7 @@ async def test_block_boundary_separation(dut):
     await run_with_test_timeout(body(), "test_block_boundary_separation")
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=10, timeout_unit="us")
 async def test_disable_mid_block(dut):
     async def body():
         await setup_dut(dut, block_cfg=0)
@@ -171,7 +161,7 @@ async def test_disable_mid_block(dut):
     await run_with_test_timeout(body(), "test_disable_mid_block")
 
 
-@cocotb.test()
+@cocotb.test(timeout_time=10, timeout_unit="us")
 async def test_multiple_blocks(dut):
     async def body():
         await setup_dut(dut, block_cfg=0)
