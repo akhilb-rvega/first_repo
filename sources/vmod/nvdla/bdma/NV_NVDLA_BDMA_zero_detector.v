@@ -1,3 +1,5 @@
+`timescale 1ns/1ps
+
 module NV_NVDLA_BDMA_zero_detector (
     input  wire         nvdla_core_clk,
     input  wire         nvdla_core_rstn,
