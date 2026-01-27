@@ -12,7 +12,6 @@ from cocotb.triggers import RisingEdge, Timer
 from cocotb_test.simulator import run
 from cocotb_tools.runner import get_runner
 
-
 # =============================================================================
 # Constants
 # =============================================================================
@@ -187,6 +186,7 @@ async def cocotb_output_backpressure(dut):
 
     dut.nvdla_bdma_out_data_prdy.value = 1
     await recv_data(dut)
+
 
 
 # =============================================================================
