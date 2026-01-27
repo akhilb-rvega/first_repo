@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
-import os
-import sys
+
 import random
 from pathlib import Path
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, Timer
+from cocotb.triggers import RisingEdge, Timer, with_timeout
+from cocotb.result import TestFailure
 
 from cocotb_test.simulator import run
-from cocotb_tools.runner import get_runner
 
 
 # =============================================================================
@@ -203,6 +202,7 @@ def test_NV_NVDLA_BDMA_zero_detector_hidden():
         simulator="iverilog",
         waves=False,
     )
+
 
 # ---------------------------------------------------------------------
 # Pytest-compatible runner
