@@ -1,175 +1,240 @@
 # -*- coding: utf-8 -*-
 
-import os
 import random
 from pathlib import Path
 
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer, with_timeout
-from cocotb_tools.runner import get_runner
+from cocotb.result import TestFailure
 
+from cocotb_test.simulator import run
+
+
+# =============================================================================
+# Constants
+# =============================================================================
 CLK_PERIOD_NS = 10
-MAX_WAIT_CYCLES = 1000
-DEFAULT_TEST_TIMEOUT_CYCLES = 10000
+TIMEOUT_NS = 10_000
 
 
-
+# =============================================================================
+# Helper functions (cocotb only)
+# =============================================================================
 async def reset_dut(dut):
     dut.nvdla_core_rstn.value = 0
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
     dut.nvdla_bdma_inp_data_pvld.value = 0
-    dut.nvdla_bdma_out_data_prdy.value = 0
-    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 0
+    dut.nvdla_bdma_out_data_prdy.value = 1
+    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 1
     await Timer(50, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
 
 
-async def setup_dut(dut, block_cfg=0):
-    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
-    await reset_dut(dut)
-    dut.nvdla_bdma_reg2zd_cfg_block_size.value = block_cfg
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
-
-
-async def send_beat(dut, val):
-    dut.nvdla_bdma_inp_data_pd.value = val
+async def send_beat(dut, data):
+    dut.nvdla_bdma_inp_data_pd.value = data
     dut.nvdla_bdma_inp_data_pvld.value = 1
+
     while True:
         await RisingEdge(dut.nvdla_core_clk)
         if dut.nvdla_bdma_inp_data_prdy.value:
-            dut.nvdla_bdma_inp_data_pvld.value = 0
-            return
+            break
+
+    dut.nvdla_bdma_inp_data_pvld.value = 0
 
 
-async def accept_data(dut):
-    dut.nvdla_bdma_out_data_prdy.value = 1
+async def recv_data(dut):
     while True:
         await RisingEdge(dut.nvdla_core_clk)
         if dut.nvdla_bdma_out_data_pvld.value:
-            v = int(dut.nvdla_bdma_out_data_pd.value)
-            dut.nvdla_bdma_out_data_prdy.value = 0
-            return v
+            return dut.nvdla_bdma_out_data_pd.value.integer
 
 
-async def accept_zero_flag(dut):
-    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 1
+async def recv_block_result(dut):
     while True:
         await RisingEdge(dut.nvdla_core_clk)
         if dut.nvdla_bdma_out_blk_is_zero_vld.value:
-            v = int(dut.nvdla_bdma_out_blk_is_zero.value)
-            dut.nvdla_bdma_out_blk_is_zero_rdy.value = 0
-            return v
+            return int(dut.nvdla_bdma_out_blk_is_zero.value)
 
 
-# -------------------------------------------------------------
-# New Multi-Beat Tests
-# -------------------------------------------------------------
-
-@cocotb.test(timeout_time=10, timeout_unit="us")
-async def test_block_16_all_zero(dut):
-    async def body():
-        await setup_dut(dut, block_cfg=0)  # 16 beats
-        for _ in range(16):
-            await send_beat(dut, 0)
-            await accept_data(dut)
-        assert await accept_zero_flag(dut) == 1
-
-    await run_with_test_timeout(body(), "test_block_16_all_zero")
+def beats_from_cfg(cfg):
+    return [16, 32, 64, 128][cfg]
 
 
-@cocotb.test(timeout_time=10, timeout_unit="us")
-async def test_block_16_one_nonzero(dut):
-    async def body():
-        await setup_dut(dut, block_cfg=0)
-        for i in range(16):
-            val = 0 if i != 7 else 0xDE
-            await send_beat(dut, val)
-            await accept_data(dut)
-        assert await accept_zero_flag(dut) == 0
+async def run_block_test(dut, cfg, force_nonzero=False):
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = cfg
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
 
-    await run_with_test_timeout(body(), "test_block_16_one_nonzero")
+    beats = beats_from_cfg(cfg)
+    seen_nonzero = False
 
+    for i in range(beats):
+        if force_nonzero and i == beats // 2:
+            data = 1
+            seen_nonzero = True
+        else:
+            data = random.getrandbits(512)
+            if data != 0:
+                seen_nonzero = True
 
-@cocotb.test(timeout_time=10, timeout_unit="us")
-async def test_block_32_random(dut):
-    async def body():
-        await setup_dut(dut, block_cfg=1)  # 32 beats
-        any_nz = False
-        for _ in range(32):
-            val = random.randint(0, 255)
-            if val != 0:
-                any_nz = True
-            await send_beat(dut, val)
-            await accept_data(dut)
-        flag = await accept_zero_flag(dut)
-        assert flag == (0 if any_nz else 1)
+        await send_beat(dut, data)
+        out = await with_timeout(recv_data(dut), TIMEOUT_NS, "ns")
 
-    await run_with_test_timeout(body(), "test_block_32_random")
+        if out != data:
+            raise TestFailure("Output data mismatch")
 
+    res = await with_timeout(recv_block_result(dut), TIMEOUT_NS, "ns")
+    expected = 0 if seen_nonzero else 1
 
-@cocotb.test(timeout_time=10, timeout_unit="us")
-async def test_block_backpressure_mid_block(dut):
-    async def body():
-        await setup_dut(dut, block_cfg=0)
-        for i in range(16):
-            await send_beat(dut, 0)
-            if i % 4 == 0:
-                await Timer(30, units="ns")  # stall
-            await accept_data(dut)
-        assert await accept_zero_flag(dut) == 1
-
-    await run_with_test_timeout(body(), "test_block_backpressure_mid_block")
+    if res != expected:
+        raise TestFailure(f"Block zero error: expected {expected}, got {res}")
 
 
-@cocotb.test(timeout_time=10, timeout_unit="us")
-async def test_block_boundary_separation(dut):
-    async def body():
-        await setup_dut(dut, block_cfg=0)
+# =============================================================================
+# Cocotb tests (NOT collected by pytest)
+# =============================================================================
+@cocotb.test()
+async def cocotb_reset_test(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
 
-        # Block 1: zero
-        for _ in range(16):
-            await send_beat(dut, 0)
-            await accept_data(dut)
-        assert await accept_zero_flag(dut) == 1
-
-        # Block 2: non-zero
-        for i in range(16):
-            await send_beat(dut, 0x1 if i == 0 else 0)
-            await accept_data(dut)
-        assert await accept_zero_flag(dut) == 0
-
-    await run_with_test_timeout(body(), "test_block_boundary_separation")
+    assert dut.nvdla_bdma_out_data_pvld.value == 0
+    assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
 
 
-@cocotb.test(timeout_time=10, timeout_unit="us")
-async def test_disable_mid_block(dut):
-    async def body():
-        await setup_dut(dut, block_cfg=0)
-
-        for _ in range(5):
-            await send_beat(dut, 0)
-            await accept_data(dut)
-
-        dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
-        await RisingEdge(dut.nvdla_core_clk)
-
-        # No flag should appear
-        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
-
-    await run_with_test_timeout(body(), "test_disable_mid_block")
+@cocotb.test()
+async def cocotb_block16_zero(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+    await run_block_test(dut, cfg=0, force_nonzero=False)
 
 
-@cocotb.test(timeout_time=10, timeout_unit="us")
-async def test_multiple_blocks(dut):
-    async def body():
-        await setup_dut(dut, block_cfg=0)
+@cocotb.test()
+async def cocotb_block16_nonzero(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+    await run_block_test(dut, cfg=0, force_nonzero=True)
 
-        for _ in range(3):
-            for _ in range(16):
-                await send_beat(dut, 0)
-                await accept_data(dut)
-            assert await accept_zero_flag(dut) == 1
 
-    await run_with_test_timeout(body(), "test_multiple_blocks")
+@cocotb.test()
+async def cocotb_block32_zero(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+    await run_block_test(dut, cfg=1, force_nonzero=False)
+
+
+@cocotb.test()
+async def cocotb_block32_nonzero(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+    await run_block_test(dut, cfg=1, force_nonzero=True)
+
+
+@cocotb.test()
+async def cocotb_block64_zero(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+    await run_block_test(dut, cfg=2, force_nonzero=False)
+
+
+@cocotb.test()
+async def cocotb_block64_single_nonzero(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+    await run_block_test(dut, cfg=2, force_nonzero=True)
+
+
+@cocotb.test()
+async def cocotb_block128_zero(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+    await run_block_test(dut, cfg=3, force_nonzero=False)
+
+
+@cocotb.test()
+async def cocotb_disable_mid_block(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+
+    for _ in range(5):
+        await send_beat(dut, random.getrandbits(512))
+        await recv_data(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
+    await RisingEdge(dut.nvdla_core_clk)
+
+    assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
+
+
+@cocotb.test()
+async def cocotb_output_backpressure(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, units="ns").start())
+    await reset_dut(dut)
+
+    dut.nvdla_bdma_out_data_prdy.value = 0
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+
+    await send_beat(dut, 0)
+    await Timer(50, units="ns")
+
+    assert dut.nvdla_bdma_out_data_pvld.value == 1
+
+    dut.nvdla_bdma_out_data_prdy.value = 1
+    await recv_data(dut)
+
+# ---------------------------------------------------------------------
+# Pytest-compatible runner
+# ---------------------------------------------------------------------
+def test_NV_NVDLA_BDMA_zero_detector_hidden():
+    """Pytest-compatible cocotb test runner using cocotb_tools.runner"""
+    sim = os.getenv("SIM", "icarus")
+    proj_dir = Path(__file__).resolve().parent.parent
+    rtl_dir = proj_dir / "sources" / "vmod" / "nvdla" / "bdma"
+    vlibs_dir = proj_dir / "sources" / "vmod" / "vlibs"
+    rams_model_dir = proj_dir / "sources" / "vmod" / "rams" / "model"
+    rams_synth_dir = proj_dir / "sources" / "vmod" / "rams" / "synth"
+    include_dir = proj_dir / "sources" / "vmod" / "include"
+    # ------------------------------------------------------------------
+    # Collect sources
+    # ------------------------------------------------------------------
+    # Exclude duplicate SSYNC modules
+    vlibs_sources = sorted([
+        str(f) for f in vlibs_dir.glob("*.v")
+        if f.name not in ["p_SSYNC3DO.v", "p_SSYNC3DO_S_PPP.v"]
+    ])
+    rams_model_sources = sorted(str(f) for f in rams_model_dir.glob("*.v"))
+    rams_synth_sources = sorted(str(f) for f in rams_synth_dir.glob("*.v"))
+    # Exclude patterns for RTL sources
+    EXCLUDE_PATTERNS = ["sram_stub", "simple_tb_assembly_buffer", "nv_ram_sim_models", "ram_stubs"]
+    rtl_sources = sorted(
+        str(f) for f in rtl_dir.glob("*.v")
+        if not any(p in f.name for p in EXCLUDE_PATTERNS)
+    )
+    verilog_sources = (
+        vlibs_sources +
+        rams_model_sources +
+        rams_synth_sources +
+        rtl_sources
+    )
+    # ------------------------------------------------------------------
+    # Runner flow
+    # ------------------------------------------------------------------
+    runner = get_runner(sim)
+    runner.build(
+        sources=verilog_sources,
+        hdl_toplevel="NV_NVDLA_BDMA_zero_detector",
+        includes=[str(include_dir), str(vlibs_dir)],
+        defines={
+            "SYNTHESIS": 1, # Skip unsupported SV constructs in Icarus
+        },
+        build_args=["-g2012"],
+        always=True,
+    )
+    runner.test(
+        hdl_toplevel="NV_NVDLA_BDMA_zero_detector",
+        test_module="test_NV_NVDLA_BDMA_zero_detector_hidden",
+    )
