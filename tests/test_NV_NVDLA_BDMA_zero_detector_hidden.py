@@ -290,7 +290,6 @@ async def test_random_fuzz_stress(dut):
 # Pytest-compatible runner
 # ---------------------------------------------------------------------
 def test_NV_NVDLA_BDMA_zero_detector_hidden():
-    """Pytest-compatible cocotb test runner using cocotb_tools.runner"""
     import os
     from pathlib import Path
     from cocotb_tools.runner import get_runner
@@ -300,16 +299,8 @@ def test_NV_NVDLA_BDMA_zero_detector_hidden():
     proj_dir = Path(__file__).resolve().parent.parent
     rtl_dir = proj_dir / "sources" / "vmod" / "nvdla" / "bdma"
 
-    # ------------------------------------------------------------------
-    # Compile ONLY the top module RTL
-    # ------------------------------------------------------------------
-    rtl_sources = [
-        str(rtl_dir / "NV_NVDLA_BDMA_zero_detector.v")
-    ]
+    rtl_sources = [str(rtl_dir / "NV_NVDLA_BDMA_zero_detector.v")]
 
-    # ------------------------------------------------------------------
-    # Runner flow
-    # ------------------------------------------------------------------
     runner = get_runner(sim)
 
     runner.build(
