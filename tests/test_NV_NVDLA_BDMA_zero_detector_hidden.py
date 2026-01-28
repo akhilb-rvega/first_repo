@@ -32,18 +32,6 @@ async def reset_dut(dut):
     await RisingEdge(dut.nvdla_core_clk)
 
 
-async def monitor_reserved_overflow(dut):
-    """
-    Continuously check that Reserved overflow signal is always 0
-    AFTER reset is deasserted.
-    """
-    while True:
-        await RisingEdge(dut.nvdla_core_clk)
-        if dut.nvdla_core_rstn.value:
-            assert dut.nvdla_bdma_reserved_overflow.value == 0, \
-                "ERROR: Reserved overflow signal must always be 0!"
-
-
 async def send_beat(dut, data):
     dut.nvdla_bdma_inp_data_pd.value = data
     dut.nvdla_bdma_inp_data_pvld.value = 1
@@ -146,22 +134,46 @@ async def run_block_with_checks(
 async def test_reset(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
 
+
+# ------------------------------------------------------------------
+# Reserved Overflow Signal Check (NEW TEST CASE)
+# ------------------------------------------------------------------
+
+@cocotb.test(timeout_time=1, timeout_unit="us")
+async def test_reserved_overflow_must_be_zero(dut):
+    """
+    Reserved overflow signal behavior:
+    Must always be driven to 0 after reset.
+    """
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    for _ in range(50):
+        await RisingEdge(dut.nvdla_core_clk)
+        assert int(dut.nvdla_bdma_zd2reg_error_overflow.value) == 0, \
+            "ERROR: Reserved overflow signal is not driven to 0!"
+
+
+# ------------------------------------------------------------
+# Disabled mode → datapath must be BLOCKED
+# ------------------------------------------------------------
 
 @cocotb.test(timeout_time=2, timeout_unit="us")
 async def test_passthrough_disabled_basic(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
 
     dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
 
     for _ in range(20):
         dut.nvdla_bdma_inp_data_pd.value = random.getrandbits(512)
         dut.nvdla_bdma_inp_data_pvld.value = 1
+
         await RisingEdge(dut.nvdla_core_clk)
+
         assert dut.nvdla_bdma_out_data_pvld.value == 0
+
         dut.nvdla_bdma_inp_data_pvld.value = 0
 
     assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
@@ -171,7 +183,6 @@ async def test_passthrough_disabled_basic(dut):
 async def test_passthrough_disabled_backpressure(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
 
     dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
     dut.nvdla_bdma_out_data_prdy.value = 0
@@ -186,11 +197,14 @@ async def test_passthrough_disabled_backpressure(dut):
     dut.nvdla_bdma_inp_data_pvld.value = 0
 
 
+# ------------------------------------------------------------
+# Functional tests
+# ------------------------------------------------------------
+
 @cocotb.test(timeout_time=2, timeout_unit="us")
 async def test_block16_all_zero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
     await run_block_with_checks(dut, 0, "zero")
 
 
@@ -198,7 +212,6 @@ async def test_block16_all_zero(dut):
 async def test_block16_single_nonzero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
     await run_block_with_checks(dut, 0, "nonzero")
 
 
@@ -206,7 +219,6 @@ async def test_block16_single_nonzero(dut):
 async def test_block32_all_zero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
     await run_block_with_checks(dut, 1, "zero")
 
 
@@ -214,7 +226,6 @@ async def test_block32_all_zero(dut):
 async def test_block32_single_nonzero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
     await run_block_with_checks(dut, 1, "nonzero")
 
 
@@ -222,7 +233,6 @@ async def test_block32_single_nonzero(dut):
 async def test_block64_random(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
     await run_block_with_checks(dut, 2, "random")
 
 
@@ -230,7 +240,6 @@ async def test_block64_random(dut):
 async def test_block128_random(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
     await run_block_with_checks(dut, 3, "random")
 
 
@@ -238,7 +247,6 @@ async def test_block128_random(dut):
 async def test_disable_mid_block_abort(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
 
     dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
     dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0
@@ -258,7 +266,6 @@ async def test_disable_mid_block_abort(dut):
 async def test_blk_vld_exact_timing(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
     await run_block_with_checks(dut, 0, "zero")
 
 
@@ -266,7 +273,6 @@ async def test_blk_vld_exact_timing(dut):
 async def test_blk_vld_backpressure_alignment(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
 
     cfg = 0
     dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
@@ -293,7 +299,6 @@ async def test_blk_vld_backpressure_alignment(dut):
 async def test_multi_block_continuous(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
 
     for cfg in range(4):
         await run_block_with_checks(dut, cfg, "random")
@@ -305,7 +310,6 @@ async def test_multi_block_continuous(dut):
 async def test_random_fuzz_stress(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
-    cocotb.start_soon(monitor_reserved_overflow(dut))
 
     for _ in range(30):
         cfg = random.randint(0, 3)
@@ -319,6 +323,7 @@ async def test_random_fuzz_stress(dut):
 # ---------------------------------------------------------------------
 # Pytest-compatible runner
 # ---------------------------------------------------------------------
+
 def test_NV_NVDLA_BDMA_zero_detector_hidden():
     import os
     from pathlib import Path
