@@ -15,21 +15,9 @@ from cocotb_tools.runner import get_runner
 # =============================================================================
 CLK_PERIOD_NS = 10
 
-# =============================================================================
-# Global safety monitor
-# =============================================================================
-
-async def monitor_overflow_is_zero(dut):
-    """Continuously verify overflow flag is permanently 0"""
-    while True:
-        await RisingEdge(dut.nvdla_core_clk)
-        assert dut.nvdla_bdma_zd2reg_error_overflow.value == 0, \
-            "ERROR: Overflow flag must always remain 0"
-
-
-# =============================================================================
+# ============================================================
 # Helpers
-# =============================================================================
+# ============================================================
 
 async def reset_dut(dut):
     dut.nvdla_core_rstn.value = 0
@@ -42,8 +30,6 @@ async def reset_dut(dut):
     await Timer(50, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
-
-    cocotb.start_soon(monitor_overflow_is_zero(dut))
 
 
 async def send_beat(dut, data):
@@ -74,9 +60,9 @@ def beats(cfg):
     return [16, 32, 64, 128][cfg]
 
 
-# =============================================================================
+# ============================================================
 # Core block runner
-# =============================================================================
+# ============================================================
 
 async def run_block_with_checks(
     dut,
@@ -140,9 +126,9 @@ async def run_block_with_checks(
     assert res == expected
 
 
-# =============================================================================
+# ============================================================
 # TESTS
-# =============================================================================
+# ============================================================
 
 @cocotb.test(timeout_time=0.5, timeout_unit="us")
 async def test_reset(dut):
@@ -151,7 +137,27 @@ async def test_reset(dut):
 
 
 # ------------------------------------------------------------
-# Disabled mode
+# Reserved overflow signal → must always remain ZERO
+# ------------------------------------------------------------
+
+@cocotb.test(timeout_time=2, timeout_unit="us")
+async def test_overflow_signal_always_zero(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = random.randint(0, 3)
+
+    for _ in range(100):
+        await send_beat(dut, random.getrandbits(512))
+        await recv_data(dut)
+
+        assert dut.nvdla_bdma_zd2reg_error_overflow.value == 0, \
+            "ERROR: Overflow flag must always remain 0"
+
+
+# ------------------------------------------------------------
+# Disabled mode → datapath must be BLOCKED
 # ------------------------------------------------------------
 
 @cocotb.test(timeout_time=2, timeout_unit="us")
@@ -164,7 +170,9 @@ async def test_passthrough_disabled_basic(dut):
     for _ in range(20):
         dut.nvdla_bdma_inp_data_pd.value = random.getrandbits(512)
         dut.nvdla_bdma_inp_data_pvld.value = 1
+
         await RisingEdge(dut.nvdla_core_clk)
+
         assert dut.nvdla_bdma_out_data_pvld.value == 0
         dut.nvdla_bdma_inp_data_pvld.value = 0
 
@@ -276,7 +284,6 @@ async def test_random_fuzz_stress(dut):
         bp = random.choice([True, False])
         idle = random.choice([True, False])
         await run_block_with_checks(dut, cfg, pattern, bp, idle)
-
 
 
 # ---------------------------------------------------------------------
