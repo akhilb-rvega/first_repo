@@ -1,12 +1,4 @@
-// ================================================================
-//  zero_detector.sv
-//
-//  Block-level Zero Detection Engine for NVDLA BDMA Data Path
-//
-//  NVDLA-compliant IO naming using nvdla_bdma_* prefixes.
-//
-// ================================================================
-
+`timescale 1ns/1ns
 module zero_detector #(
     parameter int DATA_WIDTH   = 256,
     parameter int BLOCK_BEATS  = 16,
