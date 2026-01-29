@@ -33,7 +33,7 @@ Block Processing Behavior:
 - After the configured number of beats, the module emits a single-bit block result.
 
 Passthrough / Disable Behavior:
-- When nvdla_bdma_reg2zd_cfg_enable == 0, the datapath is BLOCKED, not transparent passthrough.
+- When cfg_enable == 0, the datapath is BLOCKED, not transparent passthrough.
 - No input data shall be accepted, no output data produced, and block result signaling shall be suppressed.
 
 Output Data Handling:
