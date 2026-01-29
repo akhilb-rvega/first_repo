@@ -7,7 +7,7 @@ module NV_NVDLA_BDMA_zero_detector (
     input  wire [1:0]   nvdla_bdma_reg2zd_cfg_block_size,
     input  wire         nvdla_bdma_reg2zd_cfg_enable,
 
-    output wire         nvdla_bdma_zd2reg_error_overflow,
+    output reg          nvdla_bdma_zd2reg_error_overflow,
 
     input  wire [511:0] nvdla_bdma_inp_data_pd,
     input  wire         nvdla_bdma_inp_data_pvld,
@@ -22,93 +22,105 @@ module NV_NVDLA_BDMA_zero_detector (
     input  wire         nvdla_bdma_out_blk_is_zero_rdy
 );
 
-    assign nvdla_bdma_zd2reg_error_overflow = 1'b0;
-
-    function [7:0] decode_beats(input [1:0] cfg);
-        case (cfg)
-            2'd0: decode_beats = 8'd16;
-            2'd1: decode_beats = 8'd32;
-            2'd2: decode_beats = 8'd64;
-            2'd3: decode_beats = 8'd128;
-            default: decode_beats = 8'd16;
-        endcase
-    endfunction
-
-    reg [7:0] beat_cnt;
+    // ------------------------------------------------------------
+    // Block size decode
+    // ------------------------------------------------------------
     reg [7:0] block_beats;
+    always @(*) begin
+        case (nvdla_bdma_reg2zd_cfg_block_size)
+            2'd0: block_beats = 8'd16;
+            2'd1: block_beats = 8'd32;
+            2'd2: block_beats = 8'd64;
+            2'd3: block_beats = 8'd128;
+            default: block_beats = 8'd16;
+        endcase
+    end
+
+    // ------------------------------------------------------------
+    // Internal state
+    // ------------------------------------------------------------
+    reg [7:0] beat_cnt;
     reg       any_nonzero;
-    reg       in_block;
+    reg       block_done_pending;
 
-    wire allow_new_block;
-    wire in_fire;
-    wire out_fire;
-
-    assign allow_new_block =
-        !nvdla_bdma_out_blk_is_zero_vld ||
-         nvdla_bdma_out_blk_is_zero_rdy;
-
+    // ------------------------------------------------------------
+    // Input ready
+    // ------------------------------------------------------------
     assign nvdla_bdma_inp_data_prdy =
-        nvdla_bdma_reg2zd_cfg_enable &&
-        allow_new_block &&
-        (!nvdla_bdma_out_data_pvld || nvdla_bdma_out_data_prdy);
+        (!nvdla_bdma_reg2zd_cfg_enable)
+            ? nvdla_bdma_out_data_prdy
+            : (~nvdla_bdma_out_data_pvld);
 
-    assign in_fire  = nvdla_bdma_inp_data_pvld && nvdla_bdma_inp_data_prdy;
-    assign out_fire = nvdla_bdma_out_data_pvld && nvdla_bdma_out_data_prdy;
-
+    // ------------------------------------------------------------
+    // Sequential logic
+    // ------------------------------------------------------------
     always @(posedge nvdla_core_clk or negedge nvdla_core_rstn) begin
         if (!nvdla_core_rstn) begin
-            nvdla_bdma_out_data_pvld       <= 1'b0;
-            nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
-            nvdla_bdma_out_blk_is_zero     <= 1'b0;
-            beat_cnt                       <= 8'd0;
-            block_beats                   <= 8'd16;
-            any_nonzero                    <= 1'b0;
-            in_block                       <= 1'b0;
+            nvdla_bdma_out_data_pvld        <= 1'b0;
+            nvdla_bdma_out_blk_is_zero_vld  <= 1'b0;
+            nvdla_bdma_out_blk_is_zero      <= 1'b0;
+            beat_cnt                        <= 8'd0;
+            any_nonzero                     <= 1'b0;
+            block_done_pending              <= 1'b0;
+            nvdla_bdma_zd2reg_error_overflow<= 1'b0;
         end else begin
 
-            // HARD abort dominates everything
+            // ----------------------------------------------------
+            // Disable → clean reset of detector state
+            // ----------------------------------------------------
             if (!nvdla_bdma_reg2zd_cfg_enable) begin
-                nvdla_bdma_out_data_pvld       <= 1'b0;
-                nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
                 beat_cnt                       <= 8'd0;
                 any_nonzero                    <= 1'b0;
-                in_block                       <= 1'b0;
-            end else begin
+                block_done_pending             <= 1'b0;
+                nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
+            end
 
-                // Input accept
-                if (in_fire) begin
-                    nvdla_bdma_out_data_pd   <= nvdla_bdma_inp_data_pd;
-                    nvdla_bdma_out_data_pvld <= 1'b1;
+            // ----------------------------------------------------
+            // Data acceptance
+            // ----------------------------------------------------
+            if (nvdla_bdma_reg2zd_cfg_enable &&
+                nvdla_bdma_inp_data_pvld &&
+                nvdla_bdma_inp_data_prdy) begin
 
-                    if (!in_block) begin
-                        block_beats <= decode_beats(nvdla_bdma_reg2zd_cfg_block_size);
-                        in_block    <= 1'b1;
-                        beat_cnt    <= 8'd1;
-                        any_nonzero <= |nvdla_bdma_inp_data_pd;
-                    end else begin
-                        beat_cnt    <= beat_cnt + 1'b1;
-                        any_nonzero <= any_nonzero | (|nvdla_bdma_inp_data_pd);
-                    end
+                // Register data
+                nvdla_bdma_out_data_pd   <= nvdla_bdma_inp_data_pd;
+                nvdla_bdma_out_data_pvld <= 1'b1;
+
+                // Zero detect accumulation
+                if (|nvdla_bdma_inp_data_pd)
+                    any_nonzero <= 1'b1;
+
+                // Beat counter
+                if (beat_cnt == block_beats - 1'b1) begin
+                    beat_cnt           <= 8'd0;
+                    block_done_pending <= 1'b1;
+                end else begin
+                    beat_cnt <= beat_cnt + 1'b1;
                 end
+            end
 
-                // Output handshake
-                if (out_fire) begin
-                    nvdla_bdma_out_data_pvld <= 1'b0;
+            // ----------------------------------------------------
+            // Output handshake
+            // ----------------------------------------------------
+            if (nvdla_bdma_out_data_pvld &&
+                nvdla_bdma_out_data_prdy) begin
+                nvdla_bdma_out_data_pvld <= 1'b0;
 
-                    if (in_block && (beat_cnt == block_beats)) begin
-                        nvdla_bdma_out_blk_is_zero     <= ~any_nonzero;
-                        nvdla_bdma_out_blk_is_zero_vld <= 1'b1;
-                        beat_cnt                       <= 8'd0;
-                        any_nonzero                    <= 1'b0;
-                        in_block                       <= 1'b0;
-                    end
+                // If block completed on this beat, raise result
+                if (block_done_pending) begin
+                    nvdla_bdma_out_blk_is_zero     <= ~any_nonzero;
+                    nvdla_bdma_out_blk_is_zero_vld <= 1'b1;
+                    any_nonzero                    <= 1'b0;
+                    block_done_pending             <= 1'b0;
                 end
+            end
 
-                // Result handshake
-                if (nvdla_bdma_out_blk_is_zero_vld &&
-                    nvdla_bdma_out_blk_is_zero_rdy) begin
-                    nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
-                end
+            // ----------------------------------------------------
+            // Block result handshake
+            // ----------------------------------------------------
+            if (nvdla_bdma_out_blk_is_zero_vld &&
+                nvdla_bdma_out_blk_is_zero_rdy) begin
+                nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
             end
         end
     end
