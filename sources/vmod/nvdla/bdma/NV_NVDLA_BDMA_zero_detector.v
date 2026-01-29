@@ -24,9 +24,6 @@ module NV_NVDLA_BDMA_zero_detector (
 
     assign nvdla_bdma_zd2reg_error_overflow = 1'b0;
 
-    // ------------------------------------------------------------
-    // Block size decode
-    // ------------------------------------------------------------
     function [7:0] decode_beats(input [1:0] cfg);
         case (cfg)
             2'd0: decode_beats = 8'd16;
@@ -37,17 +34,11 @@ module NV_NVDLA_BDMA_zero_detector (
         endcase
     endfunction
 
-    // ------------------------------------------------------------
-    // Internal state
-    // ------------------------------------------------------------
     reg [7:0] beat_cnt;
     reg [7:0] block_beats;
     reg       any_nonzero;
     reg       in_block;
 
-    // ------------------------------------------------------------
-    // Flow control
-    // ------------------------------------------------------------
     wire allow_new_block;
     wire in_fire;
     wire out_fire;
@@ -64,9 +55,6 @@ module NV_NVDLA_BDMA_zero_detector (
     assign in_fire  = nvdla_bdma_inp_data_pvld && nvdla_bdma_inp_data_prdy;
     assign out_fire = nvdla_bdma_out_data_pvld && nvdla_bdma_out_data_prdy;
 
-    // ------------------------------------------------------------
-    // Sequential
-    // ------------------------------------------------------------
     always @(posedge nvdla_core_clk or negedge nvdla_core_rstn) begin
         if (!nvdla_core_rstn) begin
             nvdla_bdma_out_data_pvld       <= 1'b0;
@@ -78,9 +66,7 @@ module NV_NVDLA_BDMA_zero_detector (
             in_block                       <= 1'b0;
         end else begin
 
-            // -------------------------------
-            // Disable → hard abort
-            // -------------------------------
+            // HARD abort dominates everything
             if (!nvdla_bdma_reg2zd_cfg_enable) begin
                 nvdla_bdma_out_data_pvld       <= 1'b0;
                 nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
@@ -89,9 +75,7 @@ module NV_NVDLA_BDMA_zero_detector (
                 in_block                       <= 1'b0;
             end else begin
 
-                // -------------------------------
-                // Accept input
-                // -------------------------------
+                // Input accept
                 if (in_fire) begin
                     nvdla_bdma_out_data_pd   <= nvdla_bdma_inp_data_pd;
                     nvdla_bdma_out_data_pvld <= 1'b1;
@@ -107,9 +91,7 @@ module NV_NVDLA_BDMA_zero_detector (
                     end
                 end
 
-                // -------------------------------
                 // Output handshake
-                // -------------------------------
                 if (out_fire) begin
                     nvdla_bdma_out_data_pvld <= 1'b0;
 
@@ -122,9 +104,7 @@ module NV_NVDLA_BDMA_zero_detector (
                     end
                 end
 
-                // -------------------------------
                 // Result handshake
-                // -------------------------------
                 if (nvdla_bdma_out_blk_is_zero_vld &&
                     nvdla_bdma_out_blk_is_zero_rdy) begin
                     nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
