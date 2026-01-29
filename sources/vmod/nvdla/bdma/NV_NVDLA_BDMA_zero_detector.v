@@ -56,23 +56,24 @@ module NV_NVDLA_BDMA_zero_detector (
     // ------------------------------------------------------------
     always @(posedge nvdla_core_clk or negedge nvdla_core_rstn) begin
         if (!nvdla_core_rstn) begin
-            nvdla_bdma_out_data_pvld        <= 1'b0;
-            nvdla_bdma_out_blk_is_zero_vld  <= 1'b0;
-            nvdla_bdma_out_blk_is_zero      <= 1'b0;
-            beat_cnt                        <= 8'd0;
-            any_nonzero                     <= 1'b0;
-            block_done_pending              <= 1'b0;
-            nvdla_bdma_zd2reg_error_overflow<= 1'b0;
+            nvdla_bdma_out_data_pvld         <= 1'b0;
+            nvdla_bdma_out_blk_is_zero_vld   <= 1'b0;
+            nvdla_bdma_out_blk_is_zero       <= 1'b0;
+            beat_cnt                         <= 8'd0;
+            any_nonzero                      <= 1'b0;
+            block_done_pending               <= 1'b0;
+            nvdla_bdma_zd2reg_error_overflow <= 1'b0;
         end else begin
 
             // ----------------------------------------------------
-            // Disable → clean reset of detector state
+            // Disable → clean reset of detector state + flush datapath
             // ----------------------------------------------------
             if (!nvdla_bdma_reg2zd_cfg_enable) begin
                 beat_cnt                       <= 8'd0;
                 any_nonzero                    <= 1'b0;
                 block_done_pending             <= 1'b0;
                 nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
+                nvdla_bdma_out_data_pvld       <= 1'b0;   // *** FIX: flush output buffer ***
             end
 
             // ----------------------------------------------------
@@ -108,10 +109,10 @@ module NV_NVDLA_BDMA_zero_detector (
 
                 // If block completed on this beat, raise result
                 if (block_done_pending) begin
-                    nvdla_bdma_out_blk_is_zero     <= ~any_nonzero;
+                    nvdla_bdma_out_blk_is_zero      <= ~any_nonzero;
                     nvdla_bdma_out_blk_is_zero_vld <= 1'b1;
-                    any_nonzero                    <= 1'b0;
-                    block_done_pending             <= 1'b0;
+                    any_nonzero                     <= 1'b0;
+                    block_done_pending              <= 1'b0;
                 end
             end
 
