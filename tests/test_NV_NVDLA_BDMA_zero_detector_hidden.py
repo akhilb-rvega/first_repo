@@ -136,28 +136,15 @@ async def test_reset(dut):
     await reset_dut(dut)
 
 
-# ------------------------------------------------------------------
-# Reserved Overflow Signal Check (NEW TEST CASE)
-# ------------------------------------------------------------------
-
 @cocotb.test(timeout_time=1, timeout_unit="us")
 async def test_reserved_overflow_must_be_zero(dut):
-    """
-    Reserved overflow signal behavior:
-    Must always be driven to 0 after reset.
-    """
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
     for _ in range(50):
         await RisingEdge(dut.nvdla_core_clk)
-        assert int(dut.nvdla_bdma_zd2reg_error_overflow.value) == 0, \
-            "ERROR: Reserved overflow signal is not driven to 0!"
+        assert int(dut.nvdla_bdma_zd2reg_error_overflow.value) == 0
 
-
-# ------------------------------------------------------------
-# Disabled mode → datapath must be BLOCKED
-# ------------------------------------------------------------
 
 @cocotb.test(timeout_time=2, timeout_unit="us")
 async def test_passthrough_disabled_basic(dut):
@@ -169,11 +156,8 @@ async def test_passthrough_disabled_basic(dut):
     for _ in range(20):
         dut.nvdla_bdma_inp_data_pd.value = random.getrandbits(512)
         dut.nvdla_bdma_inp_data_pvld.value = 1
-
         await RisingEdge(dut.nvdla_core_clk)
-
         assert dut.nvdla_bdma_out_data_pvld.value == 0
-
         dut.nvdla_bdma_inp_data_pvld.value = 0
 
     assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
@@ -196,10 +180,6 @@ async def test_passthrough_disabled_backpressure(dut):
 
     dut.nvdla_bdma_inp_data_pvld.value = 0
 
-
-# ------------------------------------------------------------
-# Functional tests
-# ------------------------------------------------------------
 
 @cocotb.test(timeout_time=2, timeout_unit="us")
 async def test_block16_all_zero(dut):
@@ -316,8 +296,134 @@ async def test_random_fuzz_stress(dut):
         pattern = random.choice(["zero", "nonzero", "random"])
         bp = random.choice([True, False])
         idle = random.choice([True, False])
-
         await run_block_with_checks(dut, cfg, pattern, bp, idle)
+
+
+@cocotb.test(timeout_time=2, timeout_unit="us")
+async def test_blk_vld_never_same_cycle_as_last_data(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0
+
+    for _ in range(15):
+        await send_beat(dut, 0)
+        await recv_data(dut)
+
+    await send_beat(dut, 0)
+    await RisingEdge(dut.nvdla_core_clk)
+
+    assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
+
+
+@cocotb.test(timeout_time=3, timeout_unit="us")
+async def test_final_beat_extreme_backpressure(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    cfg = 0
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = cfg
+
+    for _ in range(beats(cfg) - 1):
+        await send_beat(dut, 0)
+        await recv_data(dut)
+
+    dut.nvdla_bdma_out_data_prdy.value = 0
+    await send_beat(dut, 0)
+
+    for _ in range(30):
+        await RisingEdge(dut.nvdla_core_clk)
+        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
+
+    dut.nvdla_bdma_out_data_prdy.value = 1
+    await recv_data(dut)
+    await recv_block_result(dut)
+
+
+@cocotb.test(timeout_time=3, timeout_unit="us")
+async def test_disable_during_output_stall(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0
+
+    for _ in range(6):
+        await send_beat(dut, random.getrandbits(512))
+
+    dut.nvdla_bdma_out_data_prdy.value = 0
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
+
+    for _ in range(25):
+        await RisingEdge(dut.nvdla_core_clk)
+        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
+        assert dut.nvdla_bdma_out_data_pvld.value == 0
+
+
+@cocotb.test(timeout_time=2, timeout_unit="us")
+async def test_reset_mid_block(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 1
+
+    for _ in range(10):
+        await send_beat(dut, random.getrandbits(512))
+
+    dut.nvdla_core_rstn.value = 0
+    await Timer(30, units="ns")
+    dut.nvdla_core_rstn.value = 1
+    await RisingEdge(dut.nvdla_core_clk)
+
+    assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
+    assert dut.nvdla_bdma_out_data_pvld.value == 0
+
+
+@cocotb.test(timeout_time=4, timeout_unit="us")
+async def test_block_result_backpressure_hold(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    cfg = 0
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = cfg
+
+    for _ in range(beats(cfg)):
+        await send_beat(dut, 0)
+        await recv_data(dut)
+
+    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 0
+
+    for _ in range(20):
+        await RisingEdge(dut.nvdla_core_clk)
+        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 1
+
+    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 1
+    await recv_block_result(dut)
+
+
+@cocotb.test(timeout_time=5, timeout_unit="us")
+async def test_cfg_change_boundary(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0
+
+    for _ in range(16):
+        await send_beat(dut, 0)
+        await recv_data(dut)
+    await recv_block_result(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 2
+
+    for _ in range(64):
+        await send_beat(dut, 0)
+        await recv_data(dut)
+    await recv_block_result(dut)
 
 
 # ---------------------------------------------------------------------
