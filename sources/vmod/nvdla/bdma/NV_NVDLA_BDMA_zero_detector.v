@@ -47,7 +47,7 @@ module NV_NVDLA_BDMA_zero_detector (
     // Input ready
     // ------------------------------------------------------------
     assign nvdla_bdma_inp_data_prdy =
-        (nvdla_bdma_reg2zd_cfg_enable) &&
+        nvdla_bdma_reg2zd_cfg_enable &&
         (~nvdla_bdma_out_data_pvld);
 
     // ------------------------------------------------------------
