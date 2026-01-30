@@ -44,6 +44,7 @@ module NV_NVDLA_BDMA_zero_detector (
 
     wire       data_is_zero;
     wire       block_done;
+    wire       next_any_nonzero;
 
     // ============================================================
     // Block Size Decode
@@ -151,8 +152,10 @@ module NV_NVDLA_BDMA_zero_detector (
          (beat_cnt == block_beats - 1));
 
     // ============================================================
-    // Non-zero Accumulation
+    // Non-zero Accumulation (FIXED)
     // ============================================================
+
+    assign next_any_nonzero = any_nonzero | (~data_is_zero);
 
     always @(posedge nvdla_core_clk or negedge nvdla_core_rstn) begin
         if (!nvdla_core_rstn)
@@ -161,10 +164,10 @@ module NV_NVDLA_BDMA_zero_detector (
             any_nonzero <= 1'b0;
         else if (nvdla_bdma_inp_data_pvld &&
                  nvdla_bdma_inp_data_prdy) begin
-            if (!data_is_zero)
-                any_nonzero <= 1'b1;
-            else if (block_done)
+            if (block_done)
                 any_nonzero <= 1'b0;
+            else
+                any_nonzero <= next_any_nonzero;
         end
     end
 
@@ -186,7 +189,7 @@ module NV_NVDLA_BDMA_zero_detector (
     assign nvdla_bdma_zd2reg_error_overflow = overflow;
 
     // ============================================================
-    // Output Block Result
+    // Output Block Result (FIXED TIMING)
     // ============================================================
 
     always @(posedge nvdla_core_clk or negedge nvdla_core_rstn) begin
@@ -203,7 +206,7 @@ module NV_NVDLA_BDMA_zero_detector (
         if (!nvdla_core_rstn)
             nvdla_bdma_out_blk_is_zero <= 1'b0;
         else if (block_done)
-            nvdla_bdma_out_blk_is_zero <= ~any_nonzero & data_is_zero;
+            nvdla_bdma_out_blk_is_zero <= ~next_any_nonzero;
     end
 
 endmodule
