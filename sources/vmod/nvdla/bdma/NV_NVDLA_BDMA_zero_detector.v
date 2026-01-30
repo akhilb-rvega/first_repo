@@ -62,7 +62,7 @@ module NV_NVDLA_BDMA_zero_detector (
             beat_cnt                        <= 8'd0;
             any_nonzero                     <= 1'b0;
             block_done_pending              <= 1'b0;
-            nvdla_bdma_zd2reg_error_overflow<= 1'b0;
+            
         end else begin
 
             // ----------------------------------------------------
@@ -124,5 +124,5 @@ module NV_NVDLA_BDMA_zero_detector (
             end
         end
     end
-
+assign nvdla_bdma_zd2reg_error_overflow = 1'b0;
 endmodule
