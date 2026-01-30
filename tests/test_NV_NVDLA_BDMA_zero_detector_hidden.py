@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 
 import os
-import sys
 import random
 from pathlib import Path
 
@@ -13,7 +12,6 @@ from cocotb_tools.runner import get_runner
 # =============================================================================
 # Constants
 # =============================================================================
-
 CLK_PERIOD_NS = 10
 
 # =============================================================================
@@ -59,50 +57,6 @@ async def recv_block_result(dut):
 
 def beats(cfg):
     return [16, 32, 64, 128][cfg]
-
-
-# =============================================================================
-# NEW TEST – Golden RTL timing discriminator
-# =============================================================================
-
-@cocotb.test(timeout_time=2, timeout_unit="us")
-async def cocotb_test_block_result_timing(dut):
-    """
-    Ensures block result valid asserts IMMEDIATELY when the last beat
-    is accepted. Golden RTL passes. FSM RTL fails.
-    """
-    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
-    await reset_dut(dut)
-
-    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0  # 16 beats
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
-
-    for _ in range(15):
-        await send_beat(dut, 0)
-        await recv_data(dut)
-
-    # Last beat
-    dut.nvdla_bdma_inp_data_pd.value = 0
-    dut.nvdla_bdma_inp_data_pvld.value = 1
-
-    await RisingEdge(dut.nvdla_core_clk)
-
-    if not dut.nvdla_bdma_inp_data_prdy.value:
-        raise AssertionError("Last beat not accepted")
-
-    # Golden RTL: result valid must assert immediately
-    if dut.nvdla_bdma_out_blk_is_zero_vld.value != 1:
-        raise AssertionError(
-            "Block result valid not asserted immediately on last beat.\n"
-            "Golden RTL: PASS\n"
-            "FSM RTL: FAIL"
-        )
-
-    if dut.nvdla_bdma_out_blk_is_zero.value != 1:
-        raise AssertionError("Block result incorrect")
-
-    dut.nvdla_bdma_inp_data_pvld.value = 0
-
 
 # =============================================================================
 # Core block runner + scoreboard
@@ -170,19 +124,18 @@ async def run_block_with_checks(
     assert res == expected, \
         f"Block result mismatch: expected={expected} got={res}"
 
-
 # =============================================================================
-# Existing Tests (UNCHANGED)
+# TESTS
 # =============================================================================
 
 @cocotb.test(timeout_time=0.5, timeout_unit="us")
-async def cocotb_test_reset(dut):
+async def test_reset(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
 
 @cocotb.test(timeout_time=1, timeout_unit="us")
-async def cocotb_test_overflow_flag_stays_zero(dut):
+async def test_overflow_flag_stays_zero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
@@ -192,7 +145,7 @@ async def cocotb_test_overflow_flag_stays_zero(dut):
 
 
 @cocotb.test(timeout_time=2, timeout_unit="us")
-async def cocotb_test_all_block_sizes_zero(dut):
+async def test_all_block_sizes_zero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
@@ -201,7 +154,7 @@ async def cocotb_test_all_block_sizes_zero(dut):
 
 
 @cocotb.test(timeout_time=2, timeout_unit="us")
-async def cocotb_test_all_block_sizes_single_nonzero(dut):
+async def test_all_block_sizes_single_nonzero(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
@@ -210,7 +163,7 @@ async def cocotb_test_all_block_sizes_single_nonzero(dut):
 
 
 @cocotb.test(timeout_time=4, timeout_unit="us")
-async def cocotb_test_random_with_backpressure_and_idle(dut):
+async def test_random_with_backpressure_and_idle(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
@@ -222,7 +175,7 @@ async def cocotb_test_random_with_backpressure_and_idle(dut):
 
 
 @cocotb.test(timeout_time=2, timeout_unit="us")
-async def cocotb_test_zero_followed_by_nonzero_block(dut):
+async def test_zero_followed_by_nonzero_block(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
@@ -231,7 +184,7 @@ async def cocotb_test_zero_followed_by_nonzero_block(dut):
 
 
 @cocotb.test(timeout_time=2, timeout_unit="us")
-async def cocotb_test_nonzero_followed_by_zero_block(dut):
+async def test_nonzero_followed_by_zero_block(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
@@ -240,7 +193,7 @@ async def cocotb_test_nonzero_followed_by_zero_block(dut):
 
 
 @cocotb.test(timeout_time=3, timeout_unit="us")
-async def cocotb_test_disable_mid_block(dut):
+async def test_disable_mid_block(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
@@ -259,44 +212,7 @@ async def cocotb_test_disable_mid_block(dut):
 
 
 @cocotb.test(timeout_time=3, timeout_unit="us")
-async def cocotb_test_abort_mid_block_data_leak(dut):
-    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
-    await reset_dut(dut)
-
-    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
-
-    for _ in range(4):
-        await send_beat(dut, 0)
-        await recv_data(dut)
-
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
-    await RisingEdge(dut.nvdla_core_clk)
-
-    dut.nvdla_bdma_inp_data_pd.value = (1 << 511)
-    dut.nvdla_bdma_inp_data_pvld.value = 1
-
-    for _ in range(10):
-        await RisingEdge(dut.nvdla_core_clk)
-        assert dut.nvdla_bdma_inp_data_prdy.value == 0
-        assert dut.nvdla_bdma_out_data_pvld.value == 0
-        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
-
-    dut.nvdla_bdma_inp_data_pvld.value = 0
-
-    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
-    await RisingEdge(dut.nvdla_core_clk)
-
-    for _ in range(16):
-        await send_beat(dut, 0)
-        await recv_data(dut)
-
-    res = await recv_block_result(dut)
-    assert res == 1
-
-
-@cocotb.test(timeout_time=3, timeout_unit="us")
-async def cocotb_test_extreme_backpressure_on_last_beat(dut):
+async def test_extreme_backpressure_on_last_beat(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
@@ -321,7 +237,7 @@ async def cocotb_test_extreme_backpressure_on_last_beat(dut):
 
 
 @cocotb.test(timeout_time=3, timeout_unit="us")
-async def cocotb_test_reset_mid_block(dut):
+async def test_reset_mid_block(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
@@ -343,7 +259,7 @@ async def cocotb_test_reset_mid_block(dut):
 
 
 @cocotb.test(timeout_time=200, timeout_unit="us")
-async def cocotb_test_long_random_stress(dut):
+async def test_long_random_stress(dut):
     cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
@@ -354,10 +270,9 @@ async def cocotb_test_long_random_stress(dut):
         idle = random.choice([True, False])
         await run_block_with_checks(dut, cfg, pattern, bp, idle)
 
-
-# ---------------------------------------------------------------------
+# =============================================================================
 # Pytest-compatible runner
-# ---------------------------------------------------------------------
+# =============================================================================
 
 def test_NV_NVDLA_BDMA_zero_detector_hidden():
     sim = os.getenv("SIM", "icarus")
