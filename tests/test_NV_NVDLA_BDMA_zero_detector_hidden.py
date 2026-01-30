@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import sys
 import random
 from pathlib import Path
 
@@ -9,29 +10,30 @@ from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
 from cocotb_tools.runner import get_runner
 
+# =============================================================================
+# Constants
+# =============================================================================
 CLK_PERIOD_NS = 10
 
-
-
-
-DATA_WIDTH  = 512
-BLOCK_BEATS = 16
-
-# -----------------------------------------------------------------------------
-# Utility Functions
-# -----------------------------------------------------------------------------
-
-def rand_data(width=DATA_WIDTH):
-    return random.getrandbits(width)
+# ============================================================
+# Helpers
+# ============================================================
 
 async def reset_dut(dut):
     dut.nvdla_core_rstn.value = 0
-    await Timer(100, units="ns")
+    dut.nvdla_bdma_inp_data_pvld.value = 0
+    dut.nvdla_bdma_out_data_prdy.value = 1
+    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0
+
+    await Timer(50, units="ns")
     dut.nvdla_core_rstn.value = 1
     await RisingEdge(dut.nvdla_core_clk)
 
+
 async def send_beat(dut, data):
-    dut.nvdla_bdma_inp_data_pd.value   = data
+    dut.nvdla_bdma_inp_data_pd.value = data
     dut.nvdla_bdma_inp_data_pvld.value = 1
     while True:
         await RisingEdge(dut.nvdla_core_clk)
@@ -39,164 +41,294 @@ async def send_beat(dut, data):
             break
     dut.nvdla_bdma_inp_data_pvld.value = 0
 
-async def recv_beat(dut):
-    dut.nvdla_bdma_out_data_prdy.value = 1
+
+async def recv_data(dut):
     while True:
         await RisingEdge(dut.nvdla_core_clk)
         if dut.nvdla_bdma_out_data_pvld.value:
-            return int(dut.nvdla_bdma_out_data_pd.value)
+            return dut.nvdla_bdma_out_data_pd.value.integer
+
 
 async def recv_block_result(dut):
-    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 1
     while True:
         await RisingEdge(dut.nvdla_core_clk)
         if dut.nvdla_bdma_out_blk_is_zero_vld.value:
             return int(dut.nvdla_bdma_out_blk_is_zero.value)
 
-async def send_block(dut, data_list):
-    for d in data_list:
-        await send_beat(dut, d)
 
-async def recv_block(dut, beats=BLOCK_BEATS):
-    out = []
-    for _ in range(beats):
-        out.append(await recv_beat(dut))
-    blk_zero = await recv_block_result(dut)
-    return out, blk_zero
+def beats(cfg):
+    return [16, 32, 64, 128][cfg]
 
-# -----------------------------------------------------------------------------
-# Reference Model
-# -----------------------------------------------------------------------------
 
-def ref_block_zero(data_list):
-    return int(all(x == 0 for x in data_list))
+# ============================================================
+# Core block runner
+# ============================================================
 
-async def common_test_setup(dut):
-    cocotb.start_soon(Clock(dut.nvdla_core_clk, 10, units="ns").start())
+async def run_block_with_checks(
+    dut,
+    cfg,
+    pattern="random",
+    backpressure=False,
+    idle_insert=False,
+):
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = cfg
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
 
-    dut.nvdla_bdma_inp_data_pvld.value       = 0
-    dut.nvdla_bdma_out_data_prdy.value       = 1
-    dut.nvdla_bdma_out_blk_is_zero_rdy.value = 1
-    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0
-    dut.nvdla_bdma_reg2zd_cfg_enable.value     = 1
+    beat_count = beats(cfg)
+    seen_nonzero = False
+    out_beats_seen = 0
 
+    for i in range(beat_count):
+
+        if pattern == "zero":
+            data = 0
+        elif pattern == "nonzero":
+            data = 1 if i == beat_count // 2 else 0
+            if data != 0:
+                seen_nonzero = True
+        else:
+            data = random.getrandbits(512)
+            if data != 0:
+                seen_nonzero = True
+
+        if backpressure and random.random() < 0.3:
+            dut.nvdla_bdma_out_data_prdy.value = 0
+            for _ in range(random.randint(1, 4)):
+                await RisingEdge(dut.nvdla_core_clk)
+            dut.nvdla_bdma_out_data_prdy.value = 1
+
+        if idle_insert and random.random() < 0.3:
+            for _ in range(random.randint(1, 4)):
+                await RisingEdge(dut.nvdla_core_clk)
+
+        await send_beat(dut, data)
+
+        while True:
+            await RisingEdge(dut.nvdla_core_clk)
+
+            if dut.nvdla_bdma_out_blk_is_zero_vld.value:
+                assert out_beats_seen == beat_count - 1, \
+                    f"blk_vld early at beat {out_beats_seen}"
+
+            if dut.nvdla_bdma_out_data_pvld.value:
+                out = dut.nvdla_bdma_out_data_pd.value.integer
+                assert out == data
+                out_beats_seen += 1
+                break
+
+    while True:
+        await RisingEdge(dut.nvdla_core_clk)
+        if dut.nvdla_bdma_out_blk_is_zero_vld.value:
+            res = int(dut.nvdla_bdma_out_blk_is_zero.value)
+            break
+
+    expected = 0 if seen_nonzero else 1
+    assert res == expected
+
+
+# ============================================================
+# TESTS
+# ============================================================
+
+@cocotb.test(timeout_time=0.5, timeout_unit="us")
+async def test_reset(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
     await reset_dut(dut)
 
-async def run_test_case(dut, data_list, test_name=""):
-    await send_block(dut, data_list)
-    out, blk_zero = await recv_block(dut)
 
-    if out != data_list:
-        raise TestFailure(f"{test_name}: Data mismatch")
+# ------------------------------------------------------------------
+# Reserved Overflow Signal Check (NEW TEST CASE)
+# ------------------------------------------------------------------
 
-    exp_zero = ref_block_zero(data_list)
-    if blk_zero != exp_zero:
-        raise TestFailure(f"{test_name}: blk_zero mismatch exp={exp_zero} got={blk_zero}")
+@cocotb.test(timeout_time=1, timeout_unit="us")
+async def test_reserved_overflow_must_be_zero(dut):
+    """
+    Reserved overflow signal behavior:
+    Must always be driven to 0 after reset.
+    """
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
 
-# -----------------------------------------------------------------------------
-# Individual Cocotb Tests (10+)
-# -----------------------------------------------------------------------------
+    for _ in range(50):
+        await RisingEdge(dut.nvdla_core_clk)
+        assert int(dut.nvdla_bdma_zd2reg_error_overflow.value) == 0, \
+            "ERROR: Reserved overflow signal is not driven to 0!"
+
+
+# ------------------------------------------------------------
+# Disabled mode → datapath must be BLOCKED
+# ------------------------------------------------------------
+
+@cocotb.test(timeout_time=2, timeout_unit="us")
+async def test_passthrough_disabled_basic(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
+
+    for _ in range(20):
+        dut.nvdla_bdma_inp_data_pd.value = random.getrandbits(512)
+        dut.nvdla_bdma_inp_data_pvld.value = 1
+
+        await RisingEdge(dut.nvdla_core_clk)
+
+        assert dut.nvdla_bdma_out_data_pvld.value == 0
+
+        dut.nvdla_bdma_inp_data_pvld.value = 0
+
+    assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
+
+
+@cocotb.test(timeout_time=2, timeout_unit="us")
+async def test_passthrough_disabled_backpressure(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
+    dut.nvdla_bdma_out_data_prdy.value = 0
+
+    dut.nvdla_bdma_inp_data_pd.value = random.getrandbits(512)
+    dut.nvdla_bdma_inp_data_pvld.value = 1
+
+    for _ in range(20):
+        await RisingEdge(dut.nvdla_core_clk)
+        assert dut.nvdla_bdma_out_data_pvld.value == 0
+
+    dut.nvdla_bdma_inp_data_pvld.value = 0
+
+
+# ------------------------------------------------------------
+# Functional tests
+# ------------------------------------------------------------
+
+@cocotb.test(timeout_time=2, timeout_unit="us")
+async def test_block16_all_zero(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+    await run_block_with_checks(dut, 0, "zero")
+
+
+@cocotb.test(timeout_time=2, timeout_unit="us")
+async def test_block16_single_nonzero(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+    await run_block_with_checks(dut, 0, "nonzero")
+
+
+@cocotb.test(timeout_time=2, timeout_unit="us")
+async def test_block32_all_zero(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+    await run_block_with_checks(dut, 1, "zero")
+
+
+@cocotb.test(timeout_time=2, timeout_unit="us")
+async def test_block32_single_nonzero(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+    await run_block_with_checks(dut, 1, "nonzero")
+
+
+@cocotb.test(timeout_time=3, timeout_unit="us")
+async def test_block64_random(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+    await run_block_with_checks(dut, 2, "random")
+
+
+@cocotb.test(timeout_time=4, timeout_unit="us")
+async def test_block128_random(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+    await run_block_with_checks(dut, 3, "random")
+
+
+@cocotb.test(timeout_time=2, timeout_unit="us")
+async def test_disable_mid_block_abort(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = 0
+
+    for _ in range(5):
+        await send_beat(dut, random.getrandbits(512))
+        await recv_data(dut)
+
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 0
+
+    for _ in range(50):
+        await RisingEdge(dut.nvdla_core_clk)
+        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
+
+
+@cocotb.test(timeout_time=2, timeout_unit="us")
+async def test_blk_vld_exact_timing(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+    await run_block_with_checks(dut, 0, "zero")
+
+
+@cocotb.test(timeout_time=3, timeout_unit="us")
+async def test_blk_vld_backpressure_alignment(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    cfg = 0
+    dut.nvdla_bdma_reg2zd_cfg_enable.value = 1
+    dut.nvdla_bdma_reg2zd_cfg_block_size.value = cfg
+
+    for _ in range(beats(cfg) - 1):
+        await send_beat(dut, 0)
+        await recv_data(dut)
+
+    dut.nvdla_bdma_out_data_prdy.value = 0
+    await send_beat(dut, 0)
+
+    for _ in range(20):
+        await RisingEdge(dut.nvdla_core_clk)
+        assert dut.nvdla_bdma_out_blk_is_zero_vld.value == 0
+
+    dut.nvdla_bdma_out_data_prdy.value = 1
+    await recv_data(dut)
+    res = await recv_block_result(dut)
+    assert res == 1
+
 
 @cocotb.test(timeout_time=200, timeout_unit="us")
-async def tc1_all_zeros(dut):
-    await common_test_setup(dut)
-    data = [0] * BLOCK_BEATS
-    await run_test_case(dut, data, "TC1_All_Zeros")
+async def test_multi_block_continuous(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    for cfg in range(4):
+        await run_block_with_checks(dut, cfg, "random")
+        await run_block_with_checks(dut, cfg, "zero")
+        await run_block_with_checks(dut, cfg, "nonzero")
 
 
-@cocotb.test(timeout_time=200, timeout_unit="us")
-async def tc2_nonzero_first(dut):
-    await common_test_setup(dut)
-    data = [rand_data()] + [0] * (BLOCK_BEATS - 1)
-    await run_test_case(dut, data, "TC2_NonZero_First")
+@cocotb.test(timeout_time=500, timeout_unit="us")
+async def test_random_fuzz_stress(dut):
+    cocotb.start_soon(Clock(dut.nvdla_core_clk, CLK_PERIOD_NS, "ns").start())
+    await reset_dut(dut)
+
+    for _ in range(30):
+        cfg = random.randint(0, 3)
+        pattern = random.choice(["zero", "nonzero", "random"])
+        bp = random.choice([True, False])
+        idle = random.choice([True, False])
+
+        await run_block_with_checks(dut, cfg, pattern, bp, idle)
 
 
-@cocotb.test(timeout_time=200, timeout_unit="us")
-async def tc3_nonzero_last(dut):
-    await common_test_setup(dut)
-    data = [0] * (BLOCK_BEATS - 1) + [rand_data()]
-    await run_test_case(dut, data, "TC3_NonZero_Last")
-
-
-@cocotb.test(timeout_time=200, timeout_unit="us")
-async def tc4_random(dut):
-    await common_test_setup(dut)
-    data = [rand_data() for _ in range(BLOCK_BEATS)]
-    await run_test_case(dut, data, "TC4_Random")
-
-
-@cocotb.test(timeout_time=200, timeout_unit="us")
-async def tc5_alternating(dut):
-    await common_test_setup(dut)
-    data = [(0 if i % 2 == 0 else rand_data()) for i in range(BLOCK_BEATS)]
-    await run_test_case(dut, data, "TC5_Alternating")
-
-
-@cocotb.test(timeout_time=200, timeout_unit="us")
-async def tc6_single_bit(dut):
-    await common_test_setup(dut)
-    data = [1 << random.randint(0, DATA_WIDTH - 1)] + [0] * (BLOCK_BEATS - 1)
-    await run_test_case(dut, data, "TC6_SingleBit")
-
-
-@cocotb.test(timeout_time=200, timeout_unit="us")
-async def tc7_all_ones(dut):
-    await common_test_setup(dut)
-    data = [(1 << DATA_WIDTH) - 1] * BLOCK_BEATS
-    await run_test_case(dut, data, "TC7_All_Ones")
-
-
-@cocotb.test(timeout_time=200, timeout_unit="us")
-async def tc8_sparse(dut):
-    await common_test_setup(dut)
-    data = [0] * BLOCK_BEATS
-    idx = random.randint(0, BLOCK_BEATS - 1)
-    data[idx] = rand_data()
-    await run_test_case(dut, data, "TC8_Sparse")
-
-
-@cocotb.test(timeout_time=200, timeout_unit="us")
-async def tc9_two_blocks(dut):
-    await common_test_setup(dut)
-    for i in range(2):
-        data = [rand_data() for _ in range(BLOCK_BEATS)]
-        await run_test_case(dut, data, f"TC9_Block_{i}")
-
-
-@cocotb.test(timeout_time=200, timeout_unit="us")
-async def tc10_stress(dut):
-    await common_test_setup(dut)
-    for i in range(5):
-        if i % 2 == 0:
-            data = [0] * BLOCK_BEATS
-        else:
-            data = [rand_data() for _ in range(BLOCK_BEATS)]
-        await run_test_case(dut, data, f"TC10_Stress_{i}")
-
-
-@cocotb.test(timeout_time=200, timeout_unit="us")
-async def tc11_walking_one(dut):
-    await common_test_setup(dut)
-    for bit in [0, DATA_WIDTH // 2, DATA_WIDTH - 1]:
-        data = [1 << bit] + [0] * (BLOCK_BEATS - 1)
-        await run_test_case(dut, data, f"TC11_WalkingOne_{bit}")
-
-
-@cocotb.test(timeout_time=200, timeout_unit="us")
-async def tc12_walking_zero(dut):
-    await common_test_setup(dut)
-    for bit in [0, DATA_WIDTH // 2, DATA_WIDTH - 1]:
-        data = [(1 << DATA_WIDTH) - 1] * BLOCK_BEATS
-        data[0] ^= (1 << bit)
-        await run_test_case(dut, data, f"TC12_WalkingZero_{bit}")
-
-
-
-# =============================================================================
+# ---------------------------------------------------------------------
 # Pytest-compatible runner
-# =============================================================================
+# ---------------------------------------------------------------------
 
 def test_NV_NVDLA_BDMA_zero_detector_hidden():
+    import os
+    from pathlib import Path
+    from cocotb_tools.runner import get_runner
+
     sim = os.getenv("SIM", "icarus")
 
     proj_dir = Path(__file__).resolve().parent.parent
