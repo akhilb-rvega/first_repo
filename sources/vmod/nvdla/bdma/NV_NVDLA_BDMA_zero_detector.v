@@ -42,28 +42,34 @@ module NV_NVDLA_BDMA_zero_detector #(
     end
 
     // ------------------------------------------------------------
-    // Streaming handshake
+    // RAW input handshake (block logic)
     // ------------------------------------------------------------
 
-    assign nvdla_bdma_inp_data_prdy =
-        nvdla_bdma_reg2zd_cfg_enable &&
-        (nvdla_bdma_out_data_prdy || !nvdla_bdma_out_data_pvld);
+    wire fire_in = nvdla_bdma_inp_data_pvld & nvdla_bdma_reg2zd_cfg_enable;
 
-    wire fire = nvdla_bdma_inp_data_pvld & nvdla_bdma_inp_data_prdy;
+    assign nvdla_bdma_inp_data_prdy = nvdla_bdma_reg2zd_cfg_enable;
 
     // ------------------------------------------------------------
-    // Data pipeline
+    // Output skid buffer
     // ------------------------------------------------------------
+
+    logic skid_valid;
 
     always_ff @(posedge nvdla_core_clk or negedge nvdla_core_rstn) begin
         if (!nvdla_core_rstn)
-            nvdla_bdma_out_data_pvld <= 1'b0;
-        else if (nvdla_bdma_inp_data_prdy)
-            nvdla_bdma_out_data_pvld <= nvdla_bdma_inp_data_pvld & nvdla_bdma_reg2zd_cfg_enable;
+            skid_valid <= 1'b0;
+        else if (!nvdla_bdma_reg2zd_cfg_enable)
+            skid_valid <= 1'b0;
+        else if (fire_in)
+            skid_valid <= 1'b1;
+        else if (nvdla_bdma_out_data_prdy)
+            skid_valid <= 1'b0;
     end
 
+    assign nvdla_bdma_out_data_pvld = skid_valid;
+
     always_ff @(posedge nvdla_core_clk) begin
-        if (fire)
+        if (fire_in)
             nvdla_bdma_out_data_pd <= nvdla_bdma_inp_data_pd;
     end
 
@@ -75,18 +81,18 @@ module NV_NVDLA_BDMA_zero_detector #(
 
     always_ff @(posedge nvdla_core_clk or negedge nvdla_core_rstn) begin
         if (!nvdla_core_rstn)
-            beat_cnt <= '0;
+            beat_cnt <= 0;
         else if (!nvdla_bdma_reg2zd_cfg_enable)
-            beat_cnt <= '0;
-        else if (fire) begin
+            beat_cnt <= 0;
+        else if (fire_in) begin
             if (beat_cnt == block_beats - 1)
-                beat_cnt <= '0;
+                beat_cnt <= 0;
             else
                 beat_cnt <= beat_cnt + 1'b1;
         end
     end
 
-    wire block_done = fire && (beat_cnt == block_beats - 1);
+    wire block_done = fire_in && (beat_cnt == block_beats - 1);
 
     // ------------------------------------------------------------
     // Zero accumulation
@@ -102,7 +108,7 @@ module NV_NVDLA_BDMA_zero_detector #(
             any_nonzero <= 1'b0;
         else if (!nvdla_bdma_reg2zd_cfg_enable)
             any_nonzero <= 1'b0;
-        else if (fire) begin
+        else if (fire_in) begin
             if (block_done)
                 any_nonzero <= 1'b0;
             else
@@ -111,11 +117,13 @@ module NV_NVDLA_BDMA_zero_detector #(
     end
 
     // ------------------------------------------------------------
-    // Block result generation (cycle-accurate)
+    // Block result generation (golden timing)
     // ------------------------------------------------------------
 
     always_ff @(posedge nvdla_core_clk or negedge nvdla_core_rstn) begin
         if (!nvdla_core_rstn)
+            nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
+        else if (!nvdla_bdma_reg2zd_cfg_enable)
             nvdla_bdma_out_blk_is_zero_vld <= 1'b0;
         else if (block_done)
             nvdla_bdma_out_blk_is_zero_vld <= 1'b1;
@@ -132,7 +140,7 @@ module NV_NVDLA_BDMA_zero_detector #(
     end
 
     // ------------------------------------------------------------
-    // Overflow (must never assert)
+    // Overflow must never assert
     // ------------------------------------------------------------
 
     assign nvdla_bdma_zd2reg_error_overflow = 1'b0;
